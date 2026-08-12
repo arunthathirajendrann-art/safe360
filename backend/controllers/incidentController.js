@@ -137,7 +137,27 @@ const updateIncidentStatus = async (req, res) => {
     });
   }
 };
+const getIncidents = async (req, res) => {
+  try {
+    const incidents = await Incident.find()
+      .sort({ createdAt: -1 });
 
+    res.json({
+      success: true,
+      count: incidents.length,
+      incidents
+    });
+
+  } catch (error) {
+    console.error("Get incidents error:", error.message);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to get incidents",
+      error: error.message
+    });
+  }
+};
 
 // GET SINGLE INCIDENT
 const getIncident = async (req, res) => {
@@ -270,6 +290,7 @@ const respondToIncident = async (req, res) => {
 module.exports = {
   createIncident,
   updateIncidentStatus,
+  getIncidents,
   getIncident,
   getResponders,
   respondToIncident
