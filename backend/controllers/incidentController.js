@@ -1,59 +1,111 @@
 const mongoose = require("mongoose");
 const Incident = require("../models/Incident");
 
+const { canTransition } = require("../services/incidentEngine/incidentEngine");
+const { analyzeIncident } = require("../services/llm/llmService");
 const {
-  canTransition
-} = require("../services/incidentEngine/incidentEngine");
-
-const {
-  assessIncident
-} = require("../services/incidentEngine/assessmentEngine");
-
-const {
+  getResponders: getRespondersService,
   escalateIncident,
+  assignResponder,
   MOCK_RESPONDERS
 } = require("../services/escalation/escalationEngine");
+const { sendNotification } = require("../services/notification/notificationEngine");
 
-const {
-  sendDemoNotification
-} = require("../services/notification/notificationEngine");
-
-
-// CREATE INCIDENT
+// CREATE & AUTOMATICALLY ORCHESTRATE INCIDENT
 const createIncident = async (req, res) => {
   try {
-    const {
-      type,
-      userId,
-      location,
-      context,
-      detectionEvidence
-    } = req.body;
+    const { type, userId, location, context, detectionEvidence } = req.body;
 
-    const calculatedPriority = assessIncident({
-      type,
-      context,
-      detectionEvidence
-    });
+    const validatedType = ["SOS", "FALL", "VOICE"].includes(type) ? type : "SOS";
 
+    // 1. Initial record creation in DETECTED state
     const incident = await Incident.create({
-      type,
-      userId,
-      location,
-      context,
-      detectionEvidence,
-      priority: calculatedPriority
+      type: validatedType,
+      userId: userId || "USR-UNKNOWN",
+      location: location || {},
+      context: context || "",
+      detectionEvidence: detectionEvidence || {},
+      status: "DETECTED",
+      priority: "HIGH"
     });
+
+    // 2. LLM Analysis via Google Gemini API
+    const llmAssessment = await analyzeIncident({
+      type: incident.type,
+      context: incident.context,
+      detectionEvidence: incident.detectionEvidence
+    });
+
+    // Merge LLM assessment into evidence for auditability
+    const existingEvidence = typeof incident.detectionEvidence === "object" ? incident.detectionEvidence : {};
+    incident.detectionEvidence = {
+      ...existingEvidence,
+      llmAssessment: {
+        incidentType: llmAssessment.incidentType,
+        summary: llmAssessment.summary,
+        priority: llmAssessment.priority,
+        requiresImmediateResponse: llmAssessment.requiresImmediateResponse,
+        isFallback: llmAssessment.isFallback
+      }
+    };
+
+    if (!incident.context && llmAssessment.summary) {
+      incident.context = llmAssessment.summary;
+    }
+
+    // 3. Automatic transition: DETECTED -> UNDERSTOOD
+    if (canTransition(incident.status, "UNDERSTOOD")) {
+      incident.status = "UNDERSTOOD";
+    }
+
+    // 4. Automatic transition: UNDERSTOOD -> ASSESSED
+    if (canTransition(incident.status, "ASSESSED")) {
+      incident.status = "ASSESSED";
+      incident.priority = llmAssessment.priority || "HIGH";
+    }
+
+    // 5. Automatic Escalation & Responder Assignment if high urgency
+    let assignedResponder = null;
+    let notificationResult = null;
+
+    if (
+      llmAssessment.requiresImmediateResponse ||
+      incident.priority === "HIGH" ||
+      incident.priority === "CRITICAL"
+    ) {
+      if (canTransition(incident.status, "ESCALATING")) {
+        incident.status = "ESCALATING";
+
+        const escalationResult = escalateIncident(incident);
+        if (escalationResult.success && escalationResult.responder) {
+          assignedResponder = escalationResult.responder;
+          incident.currentResponder = assignedResponder.id;
+
+          if (canTransition(incident.status, "RESPONDER_ASSIGNED")) {
+            incident.status = "RESPONDER_ASSIGNED";
+          }
+
+          notificationResult = sendNotification({
+            incident,
+            responder: assignedResponder
+          });
+        }
+      }
+    }
+
+    await incident.save();
 
     res.status(201).json({
       success: true,
-      message: "Incident created successfully",
-      incident
+      message: `Incident created and automatically processed to ${incident.status}`,
+      incident,
+      assessment: llmAssessment,
+      responder: assignedResponder,
+      notification: notificationResult
     });
 
   } catch (error) {
     console.error("Create incident error:", error.message);
-
     res.status(500).json({
       success: false,
       message: "Failed to create incident",
@@ -62,8 +114,7 @@ const createIncident = async (req, res) => {
   }
 };
 
-
-// UPDATE INCIDENT STATUS
+// UPDATE INCIDENT STATUS (Controlled Admin / Manual Transition)
 const updateIncidentStatus = async (req, res) => {
   try {
     const { id } = req.params;
@@ -94,42 +145,45 @@ const updateIncidentStatus = async (req, res) => {
       });
     }
 
-    // Demo escalation
+    let assignedResponder = null;
+    let notificationResult = null;
+
+    // Trigger escalation if transitioning to ESCALATING
     if (status === "ESCALATING") {
       const escalationResult = escalateIncident(incident);
 
       if (!escalationResult.success) {
         return res.status(503).json({
           success: false,
-          message: "No demo responders available"
+          message: escalationResult.message || "No responders available"
         });
       }
 
-      incident.currentResponder = escalationResult.responder.id;
+      assignedResponder = escalationResult.responder;
+      incident.currentResponder = assignedResponder.id;
 
-      // Demo notification
-      sendDemoNotification({
+      notificationResult = sendNotification({
         incident: {
           ...incident.toObject(),
           status: "RESPONDER_ASSIGNED"
         },
-        responder: escalationResult.responder
+        responder: assignedResponder
       });
     }
 
     incident.status = status;
-
     await incident.save();
 
     res.json({
       success: true,
-      message: "Incident status updated successfully",
-      incident
+      message: `Incident status updated to ${status}`,
+      incident,
+      responder: assignedResponder,
+      notification: notificationResult
     });
 
   } catch (error) {
     console.error("Update incident status error:", error.message);
-
     res.status(500).json({
       success: false,
       message: "Failed to update incident status",
@@ -137,10 +191,11 @@ const updateIncidentStatus = async (req, res) => {
     });
   }
 };
+
+// GET ALL INCIDENTS
 const getIncidents = async (req, res) => {
   try {
-    const incidents = await Incident.find()
-      .sort({ createdAt: -1 });
+    const incidents = await Incident.find().sort({ createdAt: -1 });
 
     res.json({
       success: true,
@@ -150,7 +205,6 @@ const getIncidents = async (req, res) => {
 
   } catch (error) {
     console.error("Get incidents error:", error.message);
-
     res.status(500).json({
       success: false,
       message: "Failed to get incidents",
@@ -187,7 +241,6 @@ const getIncident = async (req, res) => {
 
   } catch (error) {
     console.error("Get incident error:", error.message);
-
     res.status(500).json({
       success: false,
       message: "Failed to get incident",
@@ -196,28 +249,26 @@ const getIncident = async (req, res) => {
   }
 };
 
-
-// GET RESPONDERS
+// GET RESPONDERS CONTROLLER
 const getResponders = async (req, res) => {
   try {
+    const respondersList = getRespondersService();
+
     res.json({
       success: true,
-      responders: MOCK_RESPONDERS
+      responders: respondersList
     });
 
   } catch (error) {
     console.error("Get responders error:", error.message);
-
-    res.status(500).json({
-      success: false,
-      message: "Failed to get responders",
-      error: error.message
+    res.json({
+      success: true,
+      responders: MOCK_RESPONDERS
     });
   }
 };
 
-
-// RESPONDER ACCEPTS INCIDENT
+// RESPONDER ACCEPTS / RESPONDS TO INCIDENT
 const respondToIncident = async (req, res) => {
   try {
     const { id } = req.params;
@@ -239,33 +290,34 @@ const respondToIncident = async (req, res) => {
       });
     }
 
-    if (incident.status !== "ESCALATING") {
+    if (incident.status !== "ESCALATING" && incident.status !== "RESPONDER_ASSIGNED") {
       return res.status(400).json({
         success: false,
         message: `Responder cannot accept incident in ${incident.status} status`
       });
     }
 
-    if (incident.currentResponder !== responderId) {
+    if (incident.currentResponder && incident.currentResponder !== responderId) {
       return res.status(400).json({
         success: false,
         message: "Responder is not assigned to this incident"
       });
     }
 
-    const allowed = canTransition(
-      incident.status,
-      "RESPONDER_ASSIGNED"
-    );
-
-    if (!allowed) {
+    const assignResult = assignResponder(responderId);
+    if (!assignResult.success && assignResult.message.includes("not found")) {
       return res.status(400).json({
         success: false,
-        message: "Invalid responder assignment transition"
+        message: assignResult.message
       });
     }
 
-    incident.status = "RESPONDER_ASSIGNED";
+    incident.currentResponder = responderId;
+    if (incident.status === "ESCALATING") {
+      if (canTransition(incident.status, "RESPONDER_ASSIGNED")) {
+        incident.status = "RESPONDER_ASSIGNED";
+      }
+    }
 
     await incident.save();
 
@@ -277,7 +329,6 @@ const respondToIncident = async (req, res) => {
 
   } catch (error) {
     console.error("Responder action error:", error.message);
-
     res.status(500).json({
       success: false,
       message: "Failed to process responder action",
@@ -285,7 +336,6 @@ const respondToIncident = async (req, res) => {
     });
   }
 };
-
 
 module.exports = {
   createIncident,
