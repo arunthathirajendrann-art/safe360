@@ -3,15 +3,37 @@ import 'package:flutter/material.dart';
 class IncidentScreen extends StatelessWidget {
   final double latitude;
   final double longitude;
+  final Map<String, dynamic>? incidentData;
 
   const IncidentScreen({
     super.key,
     required this.latitude,
     required this.longitude,
+    this.incidentData,
   });
 
   @override
   Widget build(BuildContext context) {
+    // Extract backend properties safely from response payload
+    final Map<String, dynamic>? incidentMap =
+        incidentData?['incident'] as Map<String, dynamic>?;
+    final Map<String, dynamic>? responderMap =
+        incidentData?['responder'] as Map<String, dynamic>?;
+    final Map<String, dynamic>? assessmentMap =
+        incidentData?['assessment'] as Map<String, dynamic>?;
+
+    final String incidentId = incidentMap?['_id'] ?? incidentMap?['id'] ?? 'INC-MOBILE';
+    final String incidentType = incidentMap?['type'] ?? 'SOS';
+    final String status = incidentMap?['status'] ?? 'RESPONDER_ASSIGNED';
+    final String priority = incidentMap?['priority'] ?? assessmentMap?['priority'] ?? 'HIGH';
+    final String contextSummary = assessmentMap?['summary'] ?? incidentMap?['context'] ?? 'Manual SOS activated';
+
+    final String responderName = responderMap != null
+        ? '${responderMap['name']} (${responderMap['id']})'
+        : (incidentMap?['currentResponder'] != null
+            ? 'Responder ${incidentMap!['currentResponder']}'
+            : 'Waiting for acknowledgement');
+
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFC),
       appBar: AppBar(
@@ -32,7 +54,7 @@ class IncidentScreen extends StatelessWidget {
               child: ListView(
                 padding: const EdgeInsets.all(20),
                 children: [
-                  // Active incident
+                  // Active incident header
                   Container(
                     padding: const EdgeInsets.all(24),
                     decoration: BoxDecoration(
@@ -58,24 +80,34 @@ class IncidentScreen extends StatelessWidget {
                           ),
                         ),
                         const SizedBox(width: 16),
-                        const Expanded(
+                        Expanded(
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text(
+                              const Text(
                                 'ACTIVE INCIDENT',
                                 style: TextStyle(
                                   color: Colors.red,
-                                  fontSize: 16,
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.bold,
+                                  letterSpacing: 1.1,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                '$incidentType Emergency',
+                                style: const TextStyle(
+                                  fontSize: 24,
                                   fontWeight: FontWeight.bold,
                                 ),
                               ),
-                              SizedBox(height: 4),
+                              const SizedBox(height: 4),
                               Text(
-                                'Manual SOS',
-                                style: TextStyle(
-                                  fontSize: 26,
-                                  fontWeight: FontWeight.bold,
+                                'ID: $incidentId',
+                                style: const TextStyle(
+                                  color: Colors.black54,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w500,
                                 ),
                               ),
                             ],
@@ -90,14 +122,54 @@ class IncidentScreen extends StatelessWidget {
                   // Current status
                   _InfoCard(
                     title: 'Current Status',
-                    icon: Icons.circle,
-                    iconColor: Colors.orange,
-                    child: const Text(
-                      'Escalating',
-                      style: TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                      ),
+                    icon: Icons.shield,
+                    iconColor: status == 'RESOLVED' ? Colors.green : Colors.orange,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Text(
+                              status,
+                              style: const TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 4,
+                              ),
+                              decoration: BoxDecoration(
+                                color: priority == 'CRITICAL'
+                                    ? Colors.red.shade100
+                                    : Colors.amber.shade100,
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Text(
+                                priority,
+                                style: TextStyle(
+                                  color: priority == 'CRITICAL'
+                                      ? Colors.red.shade900
+                                      : Colors.amber.shade900,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 6),
+                        const Text(
+                          'Backend orchestration active',
+                          style: TextStyle(
+                            color: Colors.black54,
+                            fontSize: 13,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
 
@@ -140,15 +212,16 @@ class IncidentScreen extends StatelessWidget {
 
                   const SizedBox(height: 16),
 
-                  // Detection
+                  // Detection / LLM Assessment
                   _InfoCard(
-                    title: 'Detection',
-                    icon: Icons.touch_app_outlined,
-                    iconColor: Colors.grey,
-                    child: const Text(
-                      'Manual SOS activated',
-                      style: TextStyle(
-                        fontSize: 18,
+                    title: 'Detection & AI Assessment',
+                    icon: Icons.psychology_outlined,
+                    iconColor: Colors.purple,
+                    child: Text(
+                      contextSummary,
+                      style: const TextStyle(
+                        fontSize: 16,
+                        height: 1.4,
                       ),
                     ),
                   ),
@@ -157,13 +230,14 @@ class IncidentScreen extends StatelessWidget {
 
                   // Responder
                   _InfoCard(
-                    title: 'Responder',
+                    title: 'Assigned Responder',
                     icon: Icons.people_outline,
-                    iconColor: Colors.grey,
-                    child: const Text(
-                      'Waiting for acknowledgement',
-                      style: TextStyle(
-                        fontSize: 18,
+                    iconColor: Colors.blue,
+                    child: Text(
+                      responderName,
+                      style: const TextStyle(
+                        fontSize: 17,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
                   ),
@@ -193,24 +267,24 @@ class IncidentScreen extends StatelessWidget {
                         _TimelineItem(
                           icon: Icons.warning_amber_rounded,
                           iconColor: Colors.red,
-                          title: 'Incident created',
-                          subtitle: 'Manual SOS activated',
+                          title: 'Incident Created & Assessed',
+                          subtitle: 'Status: $status ($priority)',
                           isLast: false,
                         ),
 
                         _TimelineItem(
                           icon: Icons.notifications_none,
                           iconColor: Colors.orange,
-                          title: 'Responders being notified',
-                          subtitle: 'Waiting for acknowledgement',
+                          title: 'Responder Dispatched',
+                          subtitle: responderName,
                           isLast: false,
                         ),
 
                         _TimelineItem(
                           icon: Icons.location_on_outlined,
                           iconColor: Colors.blue,
-                          title: 'Location captured',
-                          subtitle: 'Current device location obtained',
+                          title: 'Location Captured',
+                          subtitle: '${latitude.toStringAsFixed(4)}, ${longitude.toStringAsFixed(4)}',
                           isLast: true,
                         ),
                       ],
@@ -289,11 +363,11 @@ class _InfoCard extends StatelessWidget {
             title,
             style: const TextStyle(
               color: Colors.black54,
-              fontSize: 17,
+              fontSize: 16,
               fontWeight: FontWeight.w500,
             ),
           ),
-          const SizedBox(height: 18),
+          const SizedBox(height: 16),
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -362,16 +436,16 @@ class _TimelineItem extends StatelessWidget {
                 Text(
                   title,
                   style: const TextStyle(
-                    fontSize: 17,
+                    fontSize: 16,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
-                const SizedBox(height: 6),
+                const SizedBox(height: 4),
                 Text(
                   subtitle,
                   style: const TextStyle(
                     color: Colors.black54,
-                    fontSize: 15,
+                    fontSize: 14,
                   ),
                 ),
                 if (!isLast) const SizedBox(height: 22),

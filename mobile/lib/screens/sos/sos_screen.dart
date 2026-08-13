@@ -1,9 +1,72 @@
 import 'package:flutter/material.dart';
 import '../incident/incident_screen.dart';
 import '../../services/location/location_service.dart';
+import '../../services/api/api_service.dart';
 
-class SosScreen extends StatelessWidget {
+class SosScreen extends StatefulWidget {
   const SosScreen({super.key});
+
+  @override
+  State<SosScreen> createState() => _SosScreenState();
+}
+
+class _SosScreenState extends State<SosScreen> {
+  bool _isLoading = false;
+
+  Future<void> _handleSosSubmission() async {
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      final locationService = LocationService();
+
+      final position = await locationService.getCurrentLocation();
+
+      final response = await ApiService.createIncident(
+        type: "SOS",
+        latitude: position.latitude,
+        longitude: position.longitude,
+        context: "Emergency SOS button pressed from Safe360 mobile app",
+        detectionEvidence: {
+          "source": "MOBILE_APP",
+          "trigger": "SOS_BUTTON",
+        },
+      );
+
+      if (!mounted) return;
+
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (context) => IncidentScreen(
+            latitude: position.latitude,
+            longitude: position.longitude,
+            incidentData: response,
+          ),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+
+      final errorMessage = error.toString().replaceAll('Exception: ', '');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Failed to trigger emergency SOS: $errorMessage',
+          ),
+          backgroundColor: Colors.red.shade800,
+          duration: const Duration(seconds: 5),
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -75,51 +138,46 @@ class SosScreen extends StatelessWidget {
                 width: double.infinity,
                 height: 60,
                 child: ElevatedButton(
-                  onPressed: () async {
-                    try {
-                      final locationService = LocationService();
-
-                      final position =
-                          await locationService.getCurrentLocation();
-
-                      if (!context.mounted) return;
-
-                      Navigator.pushReplacement(
-                        context,
-                        MaterialPageRoute(
-                          builder: (context) => IncidentScreen(
-                            latitude: position.latitude,
-                            longitude: position.longitude,
-                          ),
-                        ),
-                      );
-                    } catch (error) {
-                      if (!context.mounted) return;
-
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text(
-                            'Unable to get location: $error',
-                          ),
-                        ),
-                      );
-                    }
-                  },
+                  onPressed: _isLoading ? null : _handleSosSubmission,
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.red.shade600,
                     foregroundColor: Colors.white,
+                    disabledBackgroundColor: Colors.red.shade300,
+                    disabledForegroundColor: Colors.white70,
                     elevation: 0,
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(16),
                     ),
                   ),
-                  child: const Text(
-                    'I NEED HELP',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
+                  child: _isLoading
+                      ? const Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            SizedBox(
+                              width: 24,
+                              height: 24,
+                              child: CircularProgressIndicator(
+                                color: Colors.white,
+                                strokeWidth: 2.5,
+                              ),
+                            ),
+                            SizedBox(width: 12),
+                            Text(
+                              'TRIGGERING EMERGENCY...',
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        )
+                      : const Text(
+                          'I NEED HELP',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
                 ),
               ),
 
@@ -130,9 +188,11 @@ class SosScreen extends StatelessWidget {
                 width: double.infinity,
                 height: 56,
                 child: OutlinedButton(
-                  onPressed: () {
-                    Navigator.pop(context);
-                  },
+                  onPressed: _isLoading
+                      ? null
+                      : () {
+                          Navigator.pop(context);
+                        },
                   style: OutlinedButton.styleFrom(
                     foregroundColor: Colors.black87,
                     side: const BorderSide(
