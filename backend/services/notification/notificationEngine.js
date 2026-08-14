@@ -1,31 +1,28 @@
-function sendNotification({ incident, recipient, responder, escalationTier, reason }) {
-  const contactObj = recipient || responder;
-  const contactName = contactObj ? (contactObj.name || contactObj.id || contactObj) : "Dispatch Team";
-  const contactPhone = contactObj ? (contactObj.phone || "N/A") : "N/A";
-  const incidentId = incident._id || incident.id || "INCIDENT";
-  const tierLabel = escalationTier || "PRIMARY";
+const { sendConsoleNotification } = require("./providers/consoleProvider");
+const { sendTwilioNotification } = require("./providers/twilioProvider");
+const { sendTwilioVoiceNotification } = require("./providers/twilioVoiceProvider");
 
-  console.log("\n==========================================");
-  console.log("[NOTIFICATION SERVICE] Dispatch Signal Emitted");
-  console.log("==========================================");
-  console.log(`Incident ID     : ${incidentId}`);
-  console.log(`Incident Type   : ${incident.type}`);
-  console.log(`Priority        : ${incident.priority}`);
-  console.log(`Escalation Tier : ${tierLabel}`);
-  console.log(`Recipient Name  : ${contactName}`);
-  console.log(`Recipient Phone : ${contactPhone}`);
-  console.log(`Reason          : ${reason || "Emergency Escalation Triggered"}`);
-  console.log(`Provider Mode   : DEVELOPMENT_CONSOLE_PROVIDER`);
-  console.log("==========================================\n");
+async function sendNotification(params = {}) {
+  const providerMode = (process.env.NOTIFICATION_PROVIDER || process.env.VOICE_NOTIFICATION_PROVIDER || "console").toLowerCase().trim();
 
+  if (providerMode === "twilio_voice") {
+    return sendTwilioVoiceNotification(params);
+  }
+
+  if (providerMode === "twilio" || providerMode === "twilio_sms") {
+    return sendTwilioNotification(params);
+  }
+
+  if (providerMode === "console") {
+    return sendConsoleNotification(params);
+  }
+
+  // Handle invalid/unrecognized provider mode gracefully
+  console.warn(`[NOTIFICATION SERVICE] Invalid NOTIFICATION_PROVIDER '${providerMode}'. Falling back to DEVELOPMENT_CONSOLE_PROVIDER.`);
+  const fallbackResult = sendConsoleNotification(params);
   return {
-    success: true,
-    provider: "DEVELOPMENT_CONSOLE_PROVIDER",
-    message: `Escalation alert delivered to console logger for ${contactName} (${tierLabel})`,
-    recipient: contactName,
-    escalationTier: tierLabel,
-    reason: reason || "Emergency Escalation Triggered",
-    timestamp: new Date().toISOString()
+    ...fallbackResult,
+    providerWarning: `Unrecognized NOTIFICATION_PROVIDER mode '${providerMode}', used console fallback.`
   };
 }
 

@@ -29,6 +29,32 @@ function getDefaultPolicy() {
 }
 
 /**
+ * Helper to construct escalation history entry from notification result.
+ */
+function buildHistoryEntry(tier, contact, defaultAction, defaultReason, notifResult) {
+  const isVoice = notifResult && notifResult.provider === "TWILIO_VOICE_PROVIDER";
+  let action = defaultAction;
+  let reason = defaultReason;
+
+  if (notifResult && notifResult.success === false) {
+    action = isVoice ? "CALL_FAILED" : "CONTACT_FAILED";
+    reason = `Notification failed via ${notifResult.provider}: ${notifResult.error || "Delivery error"}`;
+  } else if (isVoice) {
+    action = "CALL_ATTEMPTED";
+    reason = `${defaultReason} (Twilio Voice Call SID: ${notifResult.callSid || "N/A"})`;
+  }
+
+  return {
+    tier,
+    contactName: contact ? contact.name : "N/A",
+    contactPhone: contact ? contact.phone : "N/A",
+    action,
+    reason,
+    timestamp: new Date()
+  };
+}
+
+/**
  * Initializes escalation for an incident based on priority policy.
  * LOW: Stays PENDING (routine monitoring).
  * MEDIUM/HIGH/CRITICAL: Contacts PRIMARY tier with calculated timeout.
@@ -84,22 +110,16 @@ async function initializeEscalation(incident, llmAssessment = {}) {
     escalationReason: initReason
   };
 
-  incident.escalationHistory.push({
-    tier: "PRIMARY",
-    contactName: primary.name,
-    contactPhone: primary.phone,
-    action: "CONTACT_ATTEMPTED",
-    reason: initReason,
-    timestamp: now
-  });
-
-  // Emit notification to Primary Contact
-  sendNotification({
+  // Emit notification/voice call to Primary Contact
+  const notifResult = await sendNotification({
     incident,
     recipient: primary,
     escalationTier: "PRIMARY",
     reason: initReason
   });
+
+  const historyEntry = buildHistoryEntry("PRIMARY", primary, "CONTACT_ATTEMPTED", initReason, notifResult);
+  incident.escalationHistory.push(historyEntry);
 
   return incident;
 }
@@ -130,21 +150,15 @@ async function advanceEscalation(incident, reason) {
       escalationReason: advanceReason
     };
 
-    incident.escalationHistory.push({
-      tier: "SECONDARY",
-      contactName: secondary.name,
-      contactPhone: secondary.phone,
-      action: "ESCALATED_NEXT_TIER",
-      reason: advanceReason,
-      timestamp: now
-    });
-
-    sendNotification({
+    const notifResult = await sendNotification({
       incident,
       recipient: secondary,
       escalationTier: "SECONDARY",
       reason: advanceReason
     });
+
+    const historyEntry = buildHistoryEntry("SECONDARY", secondary, "ESCALATED_NEXT_TIER", advanceReason, notifResult);
+    incident.escalationHistory.push(historyEntry);
 
   } else if (currentTier === "SECONDARY") {
     // Advance to TERTIARY
@@ -162,21 +176,15 @@ async function advanceEscalation(incident, reason) {
       escalationReason: advanceReason
     };
 
-    incident.escalationHistory.push({
-      tier: "TERTIARY",
-      contactName: tertiary.name,
-      contactPhone: tertiary.phone,
-      action: "ESCALATED_NEXT_TIER",
-      reason: advanceReason,
-      timestamp: now
-    });
-
-    sendNotification({
+    const notifResult = await sendNotification({
       incident,
       recipient: tertiary,
       escalationTier: "TERTIARY",
       reason: advanceReason
     });
+
+    const historyEntry = buildHistoryEntry("TERTIARY", tertiary, "ESCALATED_NEXT_TIER", advanceReason, notifResult);
+    incident.escalationHistory.push(historyEntry);
 
   } else if (currentTier === "TERTIARY" || currentTier === "PRIMARY" || currentTier === "SECONDARY") {
     // Advance to RESPONDER_FLEET
@@ -219,7 +227,7 @@ async function advanceEscalation(incident, reason) {
       timestamp: now
     });
 
-    sendNotification({
+    await sendNotification({
       incident,
       responder: escalationResult.responder || { name: responderName, id: responderId },
       escalationTier: "RESPONDER_FLEET",

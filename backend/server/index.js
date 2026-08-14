@@ -4,6 +4,7 @@ const express = require("express");
 const cors = require("cors");
 const mongoose = require("mongoose");
 const incidentRoutes = require("../routes/incidentRoutes");
+const { handleTwilioVoiceStatusCallback } = require("../controllers/twilioVoiceCallbackController");
 const { processEscalationTimeouts } = require("../services/escalation/contactEscalationService");
 
 const app = express();
@@ -11,7 +12,10 @@ const PORT = process.env.PORT || 5000;
 
 app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
 app.use("/api/incidents", incidentRoutes);
+app.post("/api/notifications/twilio/voice/status", handleTwilioVoiceStatusCallback);
 
 app.get("/", (req, res) => {
   res.json({

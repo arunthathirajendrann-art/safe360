@@ -354,6 +354,13 @@ export default function IncidentDetailsModal({
                     <div style={{ color: "var(--text-muted)", fontSize: "0.775rem" }}>
                       Reason: <span style={{ color: "#93C5FD" }}>{item.reason}</span>
                     </div>
+                    {(item.callSid || item.provider || item.callStatus) && (
+                      <div style={{ display: "flex", gap: "0.8rem", fontSize: "0.725rem", color: "#A5B4FC", marginTop: "0.1rem" }} className="mono">
+                        {item.provider && <span>Provider: {item.provider}</span>}
+                        {item.callSid && <span>Call SID: {item.callSid}</span>}
+                        {item.callStatus && <span>Status: {item.callStatus}</span>}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
