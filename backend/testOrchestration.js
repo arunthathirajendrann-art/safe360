@@ -3,10 +3,11 @@ const { analyzeIncident, getFallbackAssessment } = require("./services/llm/llmSe
 const { canTransition } = require("./services/incidentEngine/incidentEngine");
 const { getResponders, findAvailableResponder, assignResponder, releaseResponder, escalateIncident } = require("./services/escalation/escalationEngine");
 const { sendNotification } = require("./services/notification/notificationEngine");
+const { initializeEscalation, advanceEscalation, acknowledgeEscalation, getDefaultPolicy } = require("./services/escalation/contactEscalationService");
 
 async function runTests() {
   console.log("\n==========================================");
-  console.log("SAFE360 AUTOMATIC ORCHESTRATION TEST SUITE");
+  console.log("SAFE360 ADAPTIVE ESCALATION TEST SUITE");
   console.log("==========================================\n");
 
   let passed = 0;
@@ -28,7 +29,7 @@ async function runTests() {
   assert(fallback.requiresImmediateResponse === true, "Fallback requiresImmediateResponse is true for HIGH priority");
   assert(fallback.isFallback === true, "Fallback flag is set to true");
 
-  // TEST 2: LLM Analysis Functionality
+  // TEST 2: LLM Analysis Functionality (Gemini API)
   console.log("\n[Testing LLM Service with Gemini API...]");
   const llmResult = await analyzeIncident({
     type: "SOS",
@@ -50,7 +51,7 @@ async function runTests() {
   assert(canTransition("HELP_EN_ROUTE", "RESOLVED") === true, "VALID_TRANSITIONS allows HELP_EN_ROUTE -> RESOLVED");
   assert(canTransition("DETECTED", "RESOLVED") === false, "VALID_TRANSITIONS rejects invalid DETECTED -> RESOLVED jump");
 
-  // TEST 4: Escalation & Responder Assignment
+  // TEST 4: Responder Fleet Functions
   const responderList = getResponders();
   assert(Array.isArray(responderList) && responderList.length >= 3, "getResponders returns valid fleet array");
 
@@ -62,15 +63,75 @@ async function runTests() {
   assert(escalation.success === true, "escalateIncident succeeds when responder available");
   assert(escalation.responder !== null, "escalateIncident returns assigned responder object");
 
-  // Release responder for clean state reset
   if (escalation.responder) {
     releaseResponder(escalation.responder.id);
   }
 
   // TEST 5: Notification Service
-  const notifResult = sendNotification({ incident: mockIncident, responder: { id: "RESP-001", name: "Tactical Unit Alpha" } });
+  const notifResult = sendNotification({
+    incident: mockIncident,
+    recipient: { name: "Parent / Primary Guardian", phone: "+1-555-0191" },
+    escalationTier: "PRIMARY",
+    reason: "CRITICAL priority incident primary contact escalation"
+  });
   assert(notifResult.success === true, "sendNotification executes successfully");
   assert(notifResult.provider === "DEVELOPMENT_CONSOLE_PROVIDER", "sendNotification identifies provider mode correctly");
+
+  // TEST 6: LOW Priority Escalation Policy
+  console.log("\n[Testing Adaptive Multi-Tier Escalation Engine Policy...]");
+  const lowIncidentMock = {
+    type: "SOS",
+    priority: "LOW",
+    escalationHistory: [],
+    save: async function() { return this; }
+  };
+  await initializeEscalation(lowIncidentMock, { priority: "LOW" });
+  assert(lowIncidentMock.escalationState.currentTier === "NONE", "LOW incident initializes at tier NONE");
+  assert(lowIncidentMock.escalationState.status === "PENDING", "LOW incident stays in PENDING status for monitoring");
+  assert(lowIncidentMock.escalationHistory[0].reason.includes("LOW priority"), "LOW incident contains explainable reason");
+
+  // TEST 7: HIGH Priority Initiates PRIMARY Tier
+  const highIncidentMock = {
+    type: "SOS",
+    priority: "HIGH",
+    escalationHistory: [],
+    save: async function() { return this; }
+  };
+  await initializeEscalation(highIncidentMock, { priority: "HIGH" });
+  assert(highIncidentMock.escalationState.currentTier === "PRIMARY", "HIGH incident starts at PRIMARY contact tier");
+  assert(highIncidentMock.escalationState.status === "CONTACTING", "HIGH incident status is CONTACTING");
+  assert(highIncidentMock.escalationHistory.length === 1, "PRIMARY contact attempt recorded in history");
+  assert(highIncidentMock.escalationHistory[0].reason.includes("HIGH priority"), "History item includes human-readable reason");
+
+  // TEST 8: Timeout Advances PRIMARY -> SECONDARY
+  await advanceEscalation(highIncidentMock, "Primary contact did not respond within 15s timeout.");
+  assert(highIncidentMock.escalationState.currentTier === "SECONDARY", "Primary timeout advances escalation to SECONDARY tier");
+  assert(highIncidentMock.escalationHistory.length === 2, "SECONDARY escalation recorded in history");
+  assert(highIncidentMock.escalationHistory[1].action === "ESCALATED_NEXT_TIER", "Action recorded as ESCALATED_NEXT_TIER");
+
+  // TEST 9: Timeout Advances SECONDARY -> TERTIARY
+  await advanceEscalation(highIncidentMock, "Secondary contact did not respond within 15s timeout.");
+  assert(highIncidentMock.escalationState.currentTier === "TERTIARY", "Secondary timeout advances escalation to TERTIARY tier");
+  assert(highIncidentMock.escalationHistory.length === 3, "TERTIARY escalation recorded in history");
+
+  // TEST 10: Timeout Advances TERTIARY -> RESPONDER_FLEET Pathway
+  await advanceEscalation(highIncidentMock, "Tertiary contact did not respond within 15s timeout; dispatching tactical fleet.");
+  assert(highIncidentMock.escalationState.currentTier === "RESPONDER_FLEET", "Tertiary timeout advances to RESPONDER_FLEET pathway");
+  assert(highIncidentMock.status === "RESPONDER_ASSIGNED", "Incident status updated to RESPONDER_ASSIGNED");
+  assert(highIncidentMock.escalationHistory.length === 4, "RESPONDER_FLEET dispatch recorded in history");
+  assert(highIncidentMock.escalationHistory[3].action === "DISPATCHED_RESPONDER", "Action recorded as DISPATCHED_RESPONDER");
+
+  // TEST 11: CRITICAL Priority Multi-Tier Contact Policy
+  const criticalIncidentMock = {
+    type: "SOS",
+    priority: "CRITICAL",
+    escalationHistory: [],
+    save: async function() { return this; }
+  };
+  await initializeEscalation(criticalIncidentMock, { priority: "CRITICAL" });
+  assert(criticalIncidentMock.escalationState.currentTier === "PRIMARY", "CRITICAL incident initiates at PRIMARY tier");
+  assert(criticalIncidentMock.escalationState.timeoutAt !== null, "CRITICAL incident assigns response timeout date");
+  assert(criticalIncidentMock.escalationHistory[0].reason.includes("CRITICAL priority"), "CRITICAL history records human-readable reason");
 
   console.log("\n==========================================");
   console.log(`RESULTS: ${passed} PASSED, ${failed} FAILED`);

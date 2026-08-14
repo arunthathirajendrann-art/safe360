@@ -4,6 +4,7 @@ const express = require("express");
 const cors = require("cors");
 const mongoose = require("mongoose");
 const incidentRoutes = require("../routes/incidentRoutes");
+const { processEscalationTimeouts } = require("../services/escalation/contactEscalationService");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -30,6 +31,13 @@ async function startServer() {
     await mongoose.connect(process.env.MONGODB_URI);
 
     console.log("MongoDB connected successfully");
+
+    // Start background timeout worker (polls every 3 seconds for active timeouts)
+    setInterval(() => {
+      processEscalationTimeouts().catch((err) => {
+        console.error("Error in background timeout worker:", err.message);
+      });
+    }, 3000);
 
     app.listen(PORT, () => {
       console.log(`SAFE360 Backend running on port ${PORT}`);

@@ -317,15 +317,46 @@ export default function IncidentDetailsModal({
             </div>
           </div>
 
-          {/* Narrative Context */}
-          {incident.context && (
+          {/* Adaptive Escalation Audit Log */}
+          {Array.isArray(incident.escalationHistory) && incident.escalationHistory.length > 0 && (
             <div className="card" style={{ marginBottom: "1rem" }}>
-              <h4 style={{ fontSize: "0.85rem", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "0.5rem" }}>
-                Trigger Context Narrative
-              </h4>
-              <p style={{ fontSize: "0.875rem", color: "var(--text-main)", lineHeight: "1.5" }}>
-                {incident.context}
-              </p>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "0.6rem" }}>
+                <h4 style={{ fontSize: "0.85rem", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                  Adaptive Escalation Audit History
+                </h4>
+                <span style={{ fontSize: "0.75rem", color: "#818CF8", fontWeight: "600" }}>
+                  Current Tier: {incident.escalationState?.currentTier || "PRIMARY"} ({incident.escalationState?.status || "CONTACTING"})
+                </span>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                {incident.escalationHistory.map((item, idx) => (
+                  <div
+                    key={idx}
+                    style={{
+                      background: "rgba(15, 23, 42, 0.6)",
+                      border: "1px solid var(--border-subtle)",
+                      borderRadius: "6px",
+                      padding: "0.6rem 0.8rem",
+                      fontSize: "0.8rem",
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: "0.2rem"
+                    }}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span style={{ fontWeight: "700", color: "#F3F4F6" }}>
+                        [{item.tier}] {item.contactName || "Contact"} ({item.action})
+                      </span>
+                      <span className="mono" style={{ fontSize: "0.7rem", color: "var(--text-subtle)" }}>
+                        {formatDate(item.timestamp)}
+                      </span>
+                    </div>
+                    <div style={{ color: "var(--text-muted)", fontSize: "0.775rem" }}>
+                      Reason: <span style={{ color: "#93C5FD" }}>{item.reason}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 

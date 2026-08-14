@@ -9,12 +9,17 @@ const {
   assignResponder,
   MOCK_RESPONDERS
 } = require("../services/escalation/escalationEngine");
+const {
+  initializeEscalation,
+  acknowledgeEscalation,
+  advanceEscalation
+} = require("../services/escalation/contactEscalationService");
 const { sendNotification } = require("../services/notification/notificationEngine");
 
 // CREATE & AUTOMATICALLY ORCHESTRATE INCIDENT
 const createIncident = async (req, res) => {
   try {
-    const { type, userId, location, context, detectionEvidence } = req.body;
+    const { type, userId, location, context, detectionEvidence, escalationPolicy } = req.body;
 
     const validatedType = ["SOS", "FALL", "VOICE"].includes(type) ? type : "SOS";
 
@@ -26,7 +31,8 @@ const createIncident = async (req, res) => {
       context: context || "",
       detectionEvidence: detectionEvidence || {},
       status: "DETECTED",
-      priority: "HIGH"
+      priority: "HIGH",
+      escalationPolicy: escalationPolicy || {}
     });
 
     // 2. LLM Analysis via Google Gemini API
@@ -64,9 +70,8 @@ const createIncident = async (req, res) => {
       incident.priority = llmAssessment.priority || "HIGH";
     }
 
-    // 5. Automatic Escalation & Responder Assignment if high urgency
-    let assignedResponder = null;
-    let notificationResult = null;
+    // 5. Initialize Adaptive Multi-Tier Escalation
+    await initializeEscalation(incident, llmAssessment);
 
     if (
       llmAssessment.requiresImmediateResponse ||
@@ -75,21 +80,6 @@ const createIncident = async (req, res) => {
     ) {
       if (canTransition(incident.status, "ESCALATING")) {
         incident.status = "ESCALATING";
-
-        const escalationResult = escalateIncident(incident);
-        if (escalationResult.success && escalationResult.responder) {
-          assignedResponder = escalationResult.responder;
-          incident.currentResponder = assignedResponder.id;
-
-          if (canTransition(incident.status, "RESPONDER_ASSIGNED")) {
-            incident.status = "RESPONDER_ASSIGNED";
-          }
-
-          notificationResult = sendNotification({
-            incident,
-            responder: assignedResponder
-          });
-        }
       }
     }
 
@@ -100,8 +90,8 @@ const createIncident = async (req, res) => {
       message: `Incident created and automatically processed to ${incident.status}`,
       incident,
       assessment: llmAssessment,
-      responder: assignedResponder,
-      notification: notificationResult
+      escalationState: incident.escalationState,
+      escalationHistory: incident.escalationHistory
     });
 
   } catch (error) {
@@ -249,6 +239,77 @@ const getIncident = async (req, res) => {
   }
 };
 
+// GET INCIDENT ESCALATION DETAILS
+const getIncidentEscalation = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid incident ID"
+      });
+    }
+
+    const incident = await Incident.findById(id);
+
+    if (!incident) {
+      return res.status(404).json({
+        success: false,
+        message: "Incident not found"
+      });
+    }
+
+    res.json({
+      success: true,
+      escalation: {
+        policy: incident.escalationPolicy,
+        state: incident.escalationState,
+        history: incident.escalationHistory
+      }
+    });
+
+  } catch (error) {
+    console.error("Get escalation error:", error.message);
+    res.status(500).json({
+      success: false,
+      message: "Failed to get escalation details",
+      error: error.message
+    });
+  }
+};
+
+// ACKNOWLEDGE INCIDENT ESCALATION
+const acknowledgeIncidentEscalation = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { tier, contactId } = req.body;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid incident ID"
+      });
+    }
+
+    const incident = await acknowledgeEscalation(id, tier, contactId);
+
+    res.json({
+      success: true,
+      message: "Escalation acknowledged successfully. Escalation sequence halted.",
+      incident
+    });
+
+  } catch (error) {
+    console.error("Acknowledge escalation error:", error.message);
+    res.status(500).json({
+      success: false,
+      message: "Failed to acknowledge escalation",
+      error: error.message
+    });
+  }
+};
+
 // GET RESPONDERS CONTROLLER
 const getResponders = async (req, res) => {
   try {
@@ -342,6 +403,8 @@ module.exports = {
   updateIncidentStatus,
   getIncidents,
   getIncident,
+  getIncidentEscalation,
+  acknowledgeIncidentEscalation,
   getResponders,
   respondToIncident
 };
