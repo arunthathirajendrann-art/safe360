@@ -66,6 +66,15 @@ const handleTwilioVoiceStatusCallback = async (req, res) => {
   }
 };
 
+const handleTwilioVoiceTwiML = (req, res) => {
+  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="alice">Safe 360 emergency alert. A protected person may require assistance. Please acknowledge the emergency.</Say>
+</Response>`;
+  res.type("text/xml").send(twiml);
+};
+
 module.exports = {
-  handleTwilioVoiceStatusCallback
+  handleTwilioVoiceStatusCallback,
+  handleTwilioVoiceTwiML
 };

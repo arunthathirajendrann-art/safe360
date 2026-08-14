@@ -3,6 +3,7 @@ export const INCIDENT_STATUSES = [
   "UNDERSTOOD",
   "ASSESSED",
   "ESCALATING",
+  "ACKNOWLEDGED",
   "RESPONDER_ASSIGNED",
   "HELP_EN_ROUTE",
   "RESOLVED"
@@ -12,8 +13,9 @@ export const VALID_TRANSITIONS = {
   DETECTED: ["UNDERSTOOD"],
   UNDERSTOOD: ["ASSESSED"],
   ASSESSED: ["ESCALATING"],
-  ESCALATING: ["RESPONDER_ASSIGNED"],
-  RESPONDER_ASSIGNED: ["HELP_EN_ROUTE"],
+  ESCALATING: ["ACKNOWLEDGED", "RESPONDER_ASSIGNED"],
+  ACKNOWLEDGED: ["RESPONDER_ASSIGNED", "RESOLVED"],
+  RESPONDER_ASSIGNED: ["HELP_EN_ROUTE", "RESOLVED"],
   HELP_EN_ROUTE: ["RESOLVED"],
   RESOLVED: []
 };
@@ -45,7 +47,14 @@ export const STATUS_CONFIG = {
     badgeClass: "badge-escalating",
     color: "#F59E0B",
     icon: "TrendingUp",
-    description: "Dispatch protocol active, searching for nearest responder."
+    description: "Multi-tier escalation active, contacting guardians."
+  },
+  ACKNOWLEDGED: {
+    label: "Acknowledged",
+    badgeClass: "badge-acknowledged",
+    color: "#10B981",
+    icon: "CheckCircle",
+    description: "Authorized guardian has acknowledged the emergency."
   },
   RESPONDER_ASSIGNED: {
     label: "Responder Assigned",
@@ -66,7 +75,7 @@ export const STATUS_CONFIG = {
     badgeClass: "badge-resolved",
     color: "#10B981",
     icon: "CheckCircle2",
-    description: "Subject safe & incident closed by response team."
+    description: "Subject safe & incident closed."
   }
 };
 
@@ -103,21 +112,45 @@ export const PRIORITY_CONFIG = {
 
 export const INCIDENT_TYPES = {
   SOS: {
-    label: "Panic SOS",
+    label: "Manual Panic SOS",
     icon: "Siren",
     color: "#EF4444",
     defaultPriority: "CRITICAL"
   },
-  FALL: {
-    label: "Fall Detection",
-    icon: "Activity",
+  MANUAL_SOS: {
+    label: "Manual Panic SOS",
+    icon: "Siren",
+    color: "#EF4444",
+    defaultPriority: "CRITICAL"
+  },
+  STEALTH_SOS: {
+    label: "Stealth SOS",
+    icon: "ShieldAlert",
     color: "#F59E0B",
+    defaultPriority: "CRITICAL"
+  },
+  VOICE_SOS: {
+    label: "Voice Emergency",
+    icon: "Mic",
+    color: "#EC4899",
     defaultPriority: "HIGH"
   },
-  VOICE: {
-    label: "Voice Keyword",
-    icon: "Mic",
+  FALL_DETECTION: {
+    label: "Fall Detected",
+    icon: "Activity",
+    color: "#EF4444",
+    defaultPriority: "HIGH"
+  },
+  ROUTE_DEVIATION: {
+    label: "Route Deviation",
+    icon: "Navigation",
     color: "#3B82F6",
+    defaultPriority: "MEDIUM"
+  },
+  MISSED_CHECKIN: {
+    label: "Missed Check-in",
+    icon: "Clock",
+    color: "#10B981",
     defaultPriority: "MEDIUM"
   }
 };

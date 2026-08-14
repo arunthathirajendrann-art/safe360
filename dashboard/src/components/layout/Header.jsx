@@ -14,7 +14,9 @@ export default function Header({
   searchQuery,
   setSearchQuery,
   onRefresh,
-  onOpenSimulator
+  onOpenSimulator,
+  currentUser,
+  onLogout
 }) {
   const [time, setTime] = useState(new Date());
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -168,6 +170,25 @@ export default function Header({
           <PlusCircle size={15} />
           <span>Simulate Incident</span>
         </button>
+
+        {/* Logged in Guardian Badge & Logout */}
+        {currentUser && (
+          <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", borderLeft: "1px solid var(--border-subtle)", paddingLeft: "1rem" }}>
+            <div style={{ textAlign: "right" }}>
+              <div style={{ fontSize: "0.8rem", fontWeight: "700", color: "#F8FAFC" }}>{currentUser.name}</div>
+              <div style={{ fontSize: "0.7rem", color: "#818CF8", fontWeight: "600" }}>{currentUser.userType || "GUARDIAN"}</div>
+            </div>
+            {onLogout && (
+              <button
+                className="btn btn-outline btn-sm"
+                onClick={onLogout}
+                style={{ height: "36px", fontSize: "0.75rem", padding: "0 0.6rem" }}
+              >
+                Logout
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </header>
   );

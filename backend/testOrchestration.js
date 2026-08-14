@@ -177,7 +177,22 @@ async function runTests() {
   assert(ackIncidentMock.escalationState.status === "ACKNOWLEDGED", "Acknowledged call sets escalation state status to ACKNOWLEDGED");
   assert(ackIncidentMock.escalationHistory.some(h => h.action === "ACKNOWLEDGED"), "ACKNOWLEDGED action recorded in escalation history");
 
-  require("./models/Incident").findById = originalFindById;
+  // TEST 15: Phase 2 Unified Incident Input Sources
+  console.log("\n[Testing Phase 2 Unified Safety Input Sources...]");
+  const stealthFallback = getFallbackAssessment({ type: "STEALTH_SOS", context: "Discreet trigger", detectionEvidence: { stealthMode: true } });
+  assert(stealthFallback.priority === "HIGH", "Stealth SOS defaults to HIGH priority");
+
+  const voiceFallback = getFallbackAssessment({ type: "VOICE_SOS", context: "Voice trigger", detectionEvidence: { phrase: "Help" } });
+  assert(voiceFallback.priority === "HIGH", "Voice SOS defaults to HIGH priority");
+
+  const fallFallback = getFallbackAssessment({ type: "FALL_DETECTION", context: "Impact detected", detectionEvidence: { impactG: 4.5 } });
+  assert(fallFallback.priority === "HIGH", "Fall Detection defaults to HIGH priority");
+
+  const routeFallback = getFallbackAssessment({ type: "ROUTE_DEVIATION", context: "Off route 500m", detectionEvidence: { deviationMeters: 500 } });
+  assert(routeFallback.priority === "MEDIUM", "Route Deviation defaults to MEDIUM priority");
+
+  const checkinFallback = getFallbackAssessment({ type: "MISSED_CHECKIN", context: "Missed scheduled check-in", detectionEvidence: { scheduledTime: "20:00" } });
+  assert(checkinFallback.priority === "MEDIUM", "Missed Check-in defaults to MEDIUM priority");
 
   console.log("\n==========================================");
   console.log(`RESULTS: ${passed} PASSED, ${failed} FAILED`);

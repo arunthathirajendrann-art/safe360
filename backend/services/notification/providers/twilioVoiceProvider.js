@@ -13,40 +13,47 @@ function getCallSidInfo(callSid) {
   return callSidMap.get(callSid);
 }
 
-async function sendTwilioVoiceNotification({ incident, recipient, responder, escalationTier, reason }) {
-  const accountSid = process.env.TWILIO_ACCOUNT_SID;
-  const authToken = process.env.TWILIO_AUTH_TOKEN;
-  const fromNumber = process.env.TWILIO_PHONE_NUMBER;
-  const statusCallbackUrl = process.env.TWILIO_VOICE_STATUS_CALLBACK_URL;
+/**
+ * Normalizes phone numbers to clean E.164 format (+155550191, +919876543210).
+ */
+function formatE164Phone(phoneStr) {
+  if (!phoneStr || typeof phoneStr !== "string") return "";
+  const trimmed = phoneStr.trim();
+  const hasPlus = trimmed.startsWith("+");
+  const digitsOnly = trimmed.replace(/\D/g, "");
+  if (!digitsOnly) return "";
+  return hasPlus ? `+${digitsOnly}` : `+${digitsOnly}`;
+}
+
+async function sendTwilioVoiceNotification({ incident = {}, recipient, responder, escalationTier, reason }) {
+  const accountSid = (process.env.TWILIO_ACCOUNT_SID || "").trim();
+  const authToken = (process.env.TWILIO_AUTH_TOKEN || "").trim();
+  const rawFromNumber = (process.env.TWILIO_PHONE_NUMBER || "").trim();
   const isTestMode = process.env.TWILIO_VOICE_TEST_MODE === "true";
-  const timeoutSec = parseInt(process.env.ESCALATION_TIMEOUT_SECONDS || "15", 10);
 
   const contactObj = recipient || responder;
-  const contactName = contactObj ? (contactObj.name || contactObj.id || contactObj) : "Emergency Contact";
-  const contactPhone = contactObj ? (contactObj.phone || "") : "";
+  const contactName = contactObj ? (contactObj.name || contactObj.id || "Emergency Contact") : "Emergency Contact";
+  const rawContactPhone = contactObj ? (contactObj.phone || "") : "";
   const incidentId = incident._id || incident.id || "INCIDENT";
   const tierLabel = escalationTier || "PRIMARY";
-  const priorityLabel = incident.priority || "HIGH";
 
-  const latitude = incident.location && incident.location.latitude ? incident.location.latitude.toFixed(4) : "unknown";
-  const longitude = incident.location && incident.location.longitude ? incident.location.longitude.toFixed(4) : "unknown";
+  const formattedPhone = formatE164Phone(rawContactPhone);
+  const formattedFrom = formatE164Phone(rawFromNumber);
 
-  const spokenText = `Safe 360 emergency alert. This is an emergency notification for incident ${incidentId}. The detected priority is ${priorityLabel}. Reason: ${reason || "Emergency alert triggered"}. Location: latitude ${latitude}, longitude ${longitude}. Please acknowledge this emergency alert.`;
-
-  // Test mode simulation (used when explicitly testing without network calls)
+  // Test mode simulation (used when explicitly testing unit test scenarios without network calls)
   if (isTestMode) {
     const simulatedSid = `CA_SIM_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
-    registerCallSid(simulatedSid, incidentId, tierLabel, contactPhone);
-    console.log(`[TWILIO VOICE PROVIDER - TEST MODE] Simulated voice call to ${contactName} (${contactPhone}). Call SID: ${simulatedSid}`);
+    registerCallSid(simulatedSid, incidentId, tierLabel, formattedPhone);
+    console.log(`[TWILIO VOICE PROVIDER - TEST MODE] Simulated voice call to ${contactName} (${formattedPhone}). Call SID: ${simulatedSid}`);
     return {
       success: true,
       provider: "TWILIO_VOICE_PROVIDER",
       callSid: simulatedSid,
       callStatus: "queued",
       status: "queued",
-      message: `Simulated voice call placed to ${contactName} (${contactPhone})`,
+      message: `Simulated voice call placed to ${contactName} (${formattedPhone})`,
       recipient: contactName,
-      phone: contactPhone,
+      phone: formattedPhone,
       escalationTier: tierLabel,
       reason: reason || "Emergency Call Triggered",
       timestamp: new Date().toISOString(),
@@ -54,7 +61,8 @@ async function sendTwilioVoiceNotification({ incident, recipient, responder, esc
     };
   }
 
-  if (!accountSid || !authToken || !fromNumber) {
+  // 1. Validate credentials
+  if (!accountSid || !authToken || !rawFromNumber) {
     console.error("[TWILIO VOICE PROVIDER] Missing Twilio credentials in environment (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER).");
     return {
       success: false,
@@ -64,23 +72,24 @@ async function sendTwilioVoiceNotification({ incident, recipient, responder, esc
       status: "failed",
       error: "Missing Twilio credentials in environment configuration",
       recipient: contactName,
-      phone: contactPhone,
+      phone: formattedPhone || rawContactPhone,
       escalationTier: tierLabel,
       timestamp: new Date().toISOString()
     };
   }
 
-  if (!contactPhone || contactPhone === "N/A") {
-    console.error(`[TWILIO VOICE PROVIDER] Invalid or missing destination phone number for ${contactName}`);
+  // 2. Validate E.164 destination number format
+  if (!formattedPhone || formattedPhone.length < 8) {
+    console.error(`[TWILIO VOICE PROVIDER] Invalid E.164 destination phone number '${rawContactPhone}' for ${contactName}`);
     return {
       success: false,
       provider: "TWILIO_VOICE_PROVIDER",
       callSid: null,
       callStatus: "failed",
       status: "failed",
-      error: `Invalid destination phone number for ${contactName}`,
+      error: `Invalid E.164 destination phone number '${rawContactPhone}' for ${contactName}`,
       recipient: contactName,
-      phone: contactPhone,
+      phone: rawContactPhone,
       escalationTier: tierLabel,
       timestamp: new Date().toISOString()
     };
@@ -88,37 +97,44 @@ async function sendTwilioVoiceNotification({ incident, recipient, responder, esc
 
   try {
     const client = twilio(accountSid, authToken);
-    const twimlPayload = `<Response><Say voice="alice">${spokenText}</Say></Response>`;
 
-    const callOptions = {
-      twiml: twimlPayload,
-      to: contactPhone,
-      from: fromNumber,
-      timeout: timeoutSec
-    };
-
-    if (statusCallbackUrl && statusCallbackUrl.trim().length > 0) {
-      callOptions.statusCallback = statusCallbackUrl.trim();
-      callOptions.statusCallbackEvent = ["initiated", "ringing", "answered", "completed"];
-      callOptions.statusCallbackMethod = "POST";
-      console.log(`[TWILIO VOICE PROVIDER] Registered status callback URL: ${statusCallbackUrl}`);
-    } else {
-      console.log(`[TWILIO VOICE PROVIDER] TWILIO_VOICE_STATUS_CALLBACK_URL not configured. Call will proceed without remote webhook callbacks.`);
+    // Determine TwiML URL
+    // Priority 1: Configured TWILIO_VOICE_TWIML_URL (must be public http/https, not localhost)
+    // Priority 2: Fallback to standard Twilio voice demo URL if local or unconfigured
+    let twimlUrl = (process.env.TWILIO_VOICE_TWIML_URL || "").trim();
+    if (!twimlUrl || twimlUrl.includes("localhost") || twimlUrl.includes("127.0.0.1")) {
+      twimlUrl = "http://demo.twilio.com/docs/voice.xml";
     }
 
-    const call = await client.calls.create(callOptions);
-    registerCallSid(call.sid, incidentId, tierLabel, contactPhone);
+    const callOptions = {
+      to: formattedPhone,
+      from: formattedFrom,
+      url: twimlUrl
+    };
 
-    console.log(`[TWILIO VOICE PROVIDER] Real voice call initiated to ${contactName} (${contactPhone}). Call SID: ${call.sid}, Status: ${call.status}`);
+    // Only add statusCallback if it is a valid non-localhost public URL
+    const statusCallbackUrl = (process.env.TWILIO_VOICE_STATUS_CALLBACK_URL || "").trim();
+    if (statusCallbackUrl && !statusCallbackUrl.includes("localhost") && !statusCallbackUrl.includes("127.0.0.1")) {
+      callOptions.statusCallback = statusCallbackUrl;
+      callOptions.statusCallbackMethod = "POST";
+    }
+
+    console.log(`[TWILIO VOICE PROVIDER] Placing outbound call via Twilio SDK... (To: ${formattedPhone}, From: ${formattedFrom}, URL: ${twimlUrl})`);
+
+    const call = await client.calls.create(callOptions);
+    registerCallSid(call.sid, incidentId, tierLabel, formattedPhone);
+
+    console.log(`[TWILIO VOICE PROVIDER] Outbound call accepted by Twilio! Call SID: ${call.sid}, Status: ${call.status}`);
+
     return {
       success: true,
       provider: "TWILIO_VOICE_PROVIDER",
       callSid: call.sid,
       callStatus: call.status || "queued",
-      status: call.status || "queued",
-      message: `Outbound Twilio voice call initiated to ${contactName} (${contactPhone})`,
+      status: "DISPATCHED",
+      message: `Outbound Twilio voice call accepted for ${contactName} (${formattedPhone}). Call SID: ${call.sid}`,
       recipient: contactName,
-      phone: contactPhone,
+      phone: formattedPhone,
       escalationTier: tierLabel,
       reason: reason || "Emergency Call Triggered",
       timestamp: new Date().toISOString(),
@@ -126,16 +142,25 @@ async function sendTwilioVoiceNotification({ incident, recipient, responder, esc
     };
 
   } catch (error) {
-    console.error(`[TWILIO VOICE PROVIDER] Failed to place call to ${contactPhone}:`, error.message);
+    // Log ONLY safe diagnostic information (secrets redacted!)
+    const safeErrorLog = {
+      code: error.code || "UNKNOWN",
+      message: error.message || "Twilio call creation failed",
+      status: error.status || 500,
+      to: formattedPhone,
+      from: formattedFrom
+    };
+    console.error(`[TWILIO VOICE PROVIDER] Twilio call rejected:`, JSON.stringify(safeErrorLog));
+
     return {
       success: false,
       provider: "TWILIO_VOICE_PROVIDER",
       callSid: null,
       callStatus: "failed",
-      status: "failed",
-      error: `Twilio Voice call failed: ${error.message}`,
+      status: "FAILED",
+      error: `Twilio Error [${error.code || "UNKNOWN"}]: ${error.message}`,
       recipient: contactName,
-      phone: contactPhone,
+      phone: formattedPhone,
       escalationTier: tierLabel,
       timestamp: new Date().toISOString()
     };
@@ -145,5 +170,6 @@ async function sendTwilioVoiceNotification({ incident, recipient, responder, esc
 module.exports = {
   sendTwilioVoiceNotification,
   registerCallSid,
-  getCallSidInfo
+  getCallSidInfo,
+  formatE164Phone
 };

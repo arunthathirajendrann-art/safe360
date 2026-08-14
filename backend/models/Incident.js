@@ -24,11 +24,15 @@ const escalationHistorySchema = new mongoose.Schema(
       enum: [
         "INITIATED",
         "CONTACT_ATTEMPTED",
+        "CALL_ATTEMPTED",
+        "CALL_DISPATCHED",
+        "CALL_FAILED",
         "ACKNOWLEDGED",
         "TIMEOUT_EXCEEDED",
         "ESCALATED_NEXT_TIER",
         "DISPATCHED_RESPONDER",
-        "COMPLETED"
+        "COMPLETED",
+        "CANCELLED"
       ],
       required: true
     },
@@ -42,8 +46,14 @@ const incidentSchema = new mongoose.Schema(
   {
     type: {
       type: String,
-      enum: ["SOS", "FALL", "VOICE"],
+      enum: ["SOS", "FALL", "VOICE", "STEALTH_SOS", "ROUTE_DEVIATION", "MISSED_CHECKIN"],
       required: true
+    },
+
+    source: {
+      type: String,
+      enum: ["MANUAL_SOS", "STEALTH_SOS", "VOICE_SOS", "FALL_DETECTION", "ROUTE_DEVIATION", "MISSED_CHECKIN"],
+      default: "MANUAL_SOS"
     },
 
     userId: {
@@ -58,9 +68,11 @@ const incidentSchema = new mongoose.Schema(
         "UNDERSTOOD",
         "ASSESSED",
         "ESCALATING",
+        "ACKNOWLEDGED",
         "RESPONDER_ASSIGNED",
         "HELP_EN_ROUTE",
-        "RESOLVED"
+        "RESOLVED",
+        "CANCELLED"
       ],
       default: "DETECTED"
     },
@@ -86,10 +98,55 @@ const incidentSchema = new mongoose.Schema(
       default: {}
     },
 
+    // PHASE 5 SAFETY INTELLIGENCE & EXPLAINABILITY EXTENSIONS
+    confidence: {
+      type: Number,
+      default: 85
+    },
+
+    isSimulated: {
+      type: Boolean,
+      default: false
+    },
+
+    assessmentReason: {
+      type: String,
+      default: ""
+    },
+
+    riskFactors: {
+      type: [String],
+      default: []
+    },
+
+    sensorEvidence: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null
+    },
+
+    locationEvidence: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null
+    },
+
+    voiceEvidence: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null
+    },
+
+    checkInEvidence: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null
+    },
+
     currentResponder: {
       type: String,
       default: null
     },
+
+    cancelledAt: Date,
+    cancelledByUserId: String,
+    cancellationReason: String,
 
     // ADAPTIVE ESCALATION ENGINE EXTENSIONS
     escalationPolicy: {
@@ -107,7 +164,7 @@ const incidentSchema = new mongoose.Schema(
       },
       status: {
         type: String,
-        enum: ["PENDING", "CONTACTING", "ACKNOWLEDGED", "TIMEOUT", "ESCALATED", "COMPLETED"],
+        enum: ["PENDING", "CONTACTING", "ACKNOWLEDGED", "TIMEOUT", "ESCALATED", "COMPLETED", "CANCELLED"],
         default: "PENDING"
       },
       currentContact: contactSchema,

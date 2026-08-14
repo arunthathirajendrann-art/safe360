@@ -21,7 +21,8 @@ export default function IncidentDetailsModal({
   responders = [],
   onClose,
   onUpdateStatus,
-  onRespond
+  onRespond,
+  onAcknowledge
 }) {
   const [selectedResponder, setSelectedResponder] = useState("");
   const [isUpdating, setIsUpdating] = useState(false);
@@ -175,6 +176,17 @@ export default function IncidentDetailsModal({
             </div>
 
             <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", alignItems: "center" }}>
+              {currentStatus !== "ACKNOWLEDGED" && currentStatus !== "RESOLVED" && onAcknowledge && (
+                <button
+                  className="btn btn-sm"
+                  style={{ backgroundColor: "#10B981", color: "#FFFFFF", fontWeight: "700" }}
+                  disabled={isUpdating}
+                  onClick={() => onAcknowledge(id)}
+                >
+                  <CheckCircle2 size={14} /> ACKNOWLEDGE EMERGENCY (HALT ESCALATION)
+                </button>
+              )}
+
               {allowedNextStatuses.length > 0 ? (
                 allowedNextStatuses.map((nextSt) => (
                   <button

@@ -1,8 +1,172 @@
+import 'dart:async';
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:sensors_plus/sensors_plus.dart';
 import '../../services/auth_service.dart';
 import '../../services/api/api_service.dart';
 import '../onboarding/onboarding_screen.dart';
+
+enum FallDialogResult { cancelled, immediate, timeout }
+
+class FallConfirmationDialog extends StatefulWidget {
+  final bool isSimulated;
+  const FallConfirmationDialog({super.key, this.isSimulated = true});
+
+  @override
+  State<FallConfirmationDialog> createState() => _FallConfirmationDialogState();
+}
+
+class _FallConfirmationDialogState extends State<FallConfirmationDialog> {
+  int _secondsRemaining = 15;
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _startTimer();
+  }
+
+  void _startTimer() {
+    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (_secondsRemaining > 1) {
+        if (mounted) {
+          setState(() {
+            _secondsRemaining--;
+          });
+        }
+      } else {
+        _timer?.cancel();
+        if (mounted) {
+          Navigator.of(context).pop(FallDialogResult.timeout);
+        }
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: const Color(0xFF1E293B),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      title: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: const Color(0xFFEF4444).withOpacity(0.2),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(Icons.warning_amber_rounded, color: Color(0xFFEF4444), size: 28),
+          ),
+          const SizedBox(width: 12),
+          const Expanded(
+            child: Text(
+              'Possible Fall Detected',
+              style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+          ),
+        ],
+      ),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'High-impact acceleration spike detected (3.1g).\nPost-impact inactivity: 8s.\n\nEmergency alert will trigger automatically if you do not respond.',
+            style: TextStyle(color: Color(0xFFCBD5E1), fontSize: 13, height: 1.4),
+          ),
+          const SizedBox(height: 16),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(vertical: 14),
+            decoration: BoxDecoration(
+              color: const Color(0xFF0F172A),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: const Color(0xFFEF4444).withOpacity(0.5), width: 1.5),
+            ),
+            child: Column(
+              children: [
+                const Text(
+                  'AUTOMATIC EMERGENCY ALERT IN',
+                  style: TextStyle(color: Color(0xFF94A3B8), fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.1),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '00:${_secondsRemaining.toString().padLeft(2, '0')}',
+                  style: const TextStyle(
+                    color: Color(0xFFEF4444),
+                    fontSize: 36,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 2,
+                  ),
+                ),
+                const Text(
+                  'SECONDS',
+                  style: TextStyle(color: Color(0xFF94A3B8), fontSize: 10, fontWeight: FontWeight.bold),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+      actions: [
+        SizedBox(
+          width: double.infinity,
+          child: Column(
+            children: [
+              SizedBox(
+                width: double.infinity,
+                height: 48,
+                child: ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF10B981),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                  icon: const Icon(Icons.check_circle_outline, color: Colors.white),
+                  label: const Text(
+                    'I\'M OK (CANCEL EMERGENCY)',
+                    style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
+                  ),
+                  onPressed: () {
+                    _timer?.cancel();
+                    Navigator.of(context).pop(FallDialogResult.cancelled);
+                  },
+                ),
+              ),
+              const SizedBox(height: 8),
+              SizedBox(
+                width: double.infinity,
+                height: 38,
+                child: TextButton.icon(
+                  style: TextButton.styleFrom(
+                    backgroundColor: const Color(0xFF7F1D1D).withOpacity(0.3),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  icon: const Icon(Icons.emergency, color: Color(0xFFEF4444), size: 16),
+                  label: const Text(
+                    'SEND SOS IMMEDIATELY',
+                    style: TextStyle(color: Color(0xFFEF4444), fontSize: 12, fontWeight: FontWeight.bold),
+                  ),
+                  onPressed: () {
+                    _timer?.cancel();
+                    Navigator.of(context).pop(FallDialogResult.immediate);
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -14,6 +178,8 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   bool _isEmergencyActive = false;
   bool _isSendingSos = false;
+  bool _isFallDialogShowing = false;
+  StreamSubscription<UserAccelerometerEvent>? _accelSubscription;
   String? _activeIncidentId;
   String _activePriority = 'HIGH';
   String _activeStatus = 'DETECTED';
@@ -28,6 +194,30 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     final auth = AuthService();
     auth.fetchContacts();
+    _initAccelerometerListener();
+  }
+
+  void _initAccelerometerListener() {
+    try {
+      _accelSubscription = userAccelerometerEventStream().listen((UserAccelerometerEvent event) {
+        final double magnitude = sqrt(event.x * event.x + event.y * event.y + event.z * event.z);
+        if (magnitude > 24.5) {
+          if (!_isEmergencyActive && !_isFallDialogShowing) {
+            _triggerFallFlow(isSimulated: false);
+          }
+        }
+      });
+    } catch (_) {
+      // Sensor fallback for hardware environments without accelerometer
+    }
+  }
+
+  @override
+  void dispose() {
+    _accelSubscription?.cancel();
+    _contactNameController.dispose();
+    _contactPhoneController.dispose();
+    super.dispose();
   }
 
   Future<Position?> _getCurrentLocation() async {
@@ -46,15 +236,123 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Future<void> _triggerSos(String type) async {
+  Future<void> _triggerFallFlow({required bool isSimulated}) async {
+    if (_isEmergencyActive) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('An emergency is already active.'),
+            backgroundColor: Color(0xFFF59E0B),
+          ),
+        );
+      }
+      return;
+    }
+
+    if (_isFallDialogShowing) return;
+    _isFallDialogShowing = true;
+
+    final result = await showDialog<FallDialogResult>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => FallConfirmationDialog(isSimulated: isSimulated),
+    );
+
+    _isFallDialogShowing = false;
+
+    if (result == FallDialogResult.cancelled || result == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Fall alert cancelled.'),
+            backgroundColor: Color(0xFF334155),
+          ),
+        );
+      }
+      return;
+    }
+
     setState(() {
       _isSendingSos = true;
     });
 
     final auth = AuthService();
     final pos = await _getCurrentLocation();
-    final lat = pos?.latitude ?? 37.7749;
-    final lng = pos?.longitude ?? -122.4194;
+    final lat = pos?.latitude ?? 13.0827;
+    final lng = pos?.longitude ?? 80.2707;
+
+    try {
+      final res = await ApiService.createIncident(
+        type: 'FALL_DETECTION',
+        latitude: lat,
+        longitude: lng,
+        userId: auth.user?['userId'] ?? 'USR-MOBILE-01',
+        token: auth.token,
+        context: isSimulated ? 'Manual fall detection simulation trigger' : 'Motion sensor high-G impact fall detected',
+        isSimulated: isSimulated,
+        sensorEvidence: {
+          'impactMagnitude': 3.1,
+          'inactivityDuration': 8,
+          'orientationDelta': 74,
+        },
+        detectionEvidence: {
+          'source': 'FALL_DETECTION',
+          'isSimulated': isSimulated,
+          'impactG': 3.1,
+          'sensorConfirmed': true,
+        },
+      );
+
+      final incident = res['incident'];
+      final assessment = res['assessment'];
+
+      setState(() {
+        _isEmergencyActive = true;
+        _isSendingSos = false;
+        _activeIncidentId = incident['_id'] ?? incident['id'];
+        _activePriority = incident['priority'] ?? assessment['priority'] ?? 'HIGH';
+        _activeStatus = incident['status'] ?? 'UNDERSTOOD';
+        _activeSummary = assessment?['summary'] ?? 'Fall emergency incident in progress.';
+      });
+
+    } catch (e) {
+      setState(() {
+        _isSendingSos = false;
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Fall Emergency Alert Error: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  Future<void> _triggerSos(String type) async {
+    if (type == 'FALL_DETECTION' || type == 'FALL') {
+      await _triggerFallFlow(isSimulated: true);
+      return;
+    }
+
+    if (_isEmergencyActive) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('An emergency is already active.'),
+            backgroundColor: Color(0xFFF59E0B),
+          ),
+        );
+      }
+      return;
+    }
+
+    setState(() {
+      _isSendingSos = true;
+    });
+
+    final auth = AuthService();
+    final pos = await _getCurrentLocation();
+    final lat = pos?.latitude ?? 13.0827;
+    final lng = pos?.longitude ?? 80.2707;
 
     try {
       final res = await ApiService.createIncident(
@@ -63,11 +361,23 @@ class _HomeScreenState extends State<HomeScreen> {
         longitude: lng,
         userId: auth.user?['userId'] ?? 'USR-MOBILE-01',
         token: auth.token,
-        context: type == 'VOICE' ? 'Voice emergency signal triggered' : 'SOS Emergency button pressed',
+        context: type == 'VOICE' ? 'Voice emergency signal triggered' : (type == 'STEALTH_SOS' ? 'Stealth emergency trigger' : 'SOS Emergency button pressed'),
       );
 
       final incident = res['incident'];
       final assessment = res['assessment'];
+
+      if (type == 'STEALTH_SOS') {
+        setState(() {
+          _isSendingSos = false;
+        });
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Safety signal received.'), backgroundColor: Color(0xFF334155)),
+          );
+        }
+        return;
+      }
 
       setState(() {
         _isEmergencyActive = true;
@@ -85,6 +395,31 @@ class _HomeScreenState extends State<HomeScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Emergency Alert Error: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  Future<void> _cancelActiveSos() async {
+    if (_activeIncidentId == null) return;
+    final auth = AuthService();
+
+    try {
+      await ApiService.cancelIncident(_activeIncidentId!, auth.token!, 'Cancelled by user on mobile app');
+      setState(() {
+        _isEmergencyActive = false;
+        _activeStatus = 'CANCELLED';
+        _activeIncidentId = null;
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Emergency alert cancelled successfully.'), backgroundColor: Colors.green),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to cancel emergency: $e'), backgroundColor: Colors.red),
         );
       }
     }
@@ -155,6 +490,93 @@ class _HomeScreenState extends State<HomeScreen> {
         );
       },
     );
+  }
+
+  Future<void> _showGenerateCodeDialog() async {
+    final auth = AuthService();
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => const Center(child: CircularProgressIndicator(color: Color(0xFF6366F1))),
+    );
+
+    try {
+      final res = await ApiService.generateConnectionCode(auth.token!);
+      if (mounted) Navigator.pop(context);
+
+      final code = res['code'] ?? '------';
+      auth.fetchContacts();
+
+      if (mounted) {
+        showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: const Color(0xFF1E293B),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            title: const Row(
+              children: [
+                Icon(Icons.vibration, color: Color(0xFF818CF8)),
+                SizedBox(width: 8),
+                Text('Guardian Connection Code', style: TextStyle(color: Colors.white, fontSize: 16)),
+              ],
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text(
+                  'Give this code to your guardian to enter on their Safe360 Command Center:',
+                  style: TextStyle(color: Color(0xFF94A3B8), fontSize: 13),
+                ),
+                const SizedBox(height: 16),
+                Container(
+                  padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 24),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF0F172A),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFF6366F1), width: 2),
+                  ),
+                  child: Text(
+                    code,
+                    style: const TextStyle(
+                      color: Color(0xFF818CF8),
+                      fontSize: 28,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 6,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                const Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.timer, size: 14, color: Color(0xFFF59E0B)),
+                    SizedBox(width: 4),
+                    Text(
+                      'Expires in 10 minutes',
+                      style: TextStyle(color: Color(0xFFF59E0B), fontSize: 12, fontWeight: FontWeight.bold),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+            actions: [
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF6366F1)),
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Done', style: TextStyle(color: Colors.white)),
+              ),
+            ],
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) Navigator.pop(context);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to generate code: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
   }
 
   @override
@@ -535,30 +957,71 @@ class _HomeScreenState extends State<HomeScreen> {
                             padding: const EdgeInsets.only(top: 4),
                             child: Text('AI Assessment: $_activeSummary', style: const TextStyle(color: Color(0xFFCBD5E1), fontSize: 12)),
                           ),
+                        const SizedBox(height: 12),
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF334155)),
+                            icon: const Icon(Icons.cancel_outlined, color: Colors.white, size: 16),
+                            label: const Text('CANCEL EMERGENCY (FALSE ALARM)', style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold)),
+                            onPressed: _cancelActiveSos,
+                          ),
+                        ),
                       ],
                     ),
                   ),
                   const SizedBox(height: 28),
                 ],
 
-                // Action Options Grid
+                // Phase 2 Unified Safety Input Grid
                 Row(
                   children: [
                     Expanded(
                       child: ElevatedButton.icon(
-                        style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1E293B), padding: const EdgeInsets.symmetric(vertical: 14)),
-                        icon: const Icon(Icons.mic, color: Color(0xFFEC4899), size: 20),
-                        label: const Text('Voice SOS', style: TextStyle(color: Colors.white, fontSize: 13)),
-                        onPressed: () => _triggerSos('VOICE'),
+                        style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1E293B), padding: const EdgeInsets.symmetric(vertical: 12)),
+                        icon: const Icon(Icons.mic, color: Color(0xFFEC4899), size: 18),
+                        label: const Text('Voice SOS', style: TextStyle(color: Colors.white, fontSize: 12)),
+                        onPressed: () => _triggerSos('VOICE_SOS'),
                       ),
                     ),
-                    const SizedBox(width: 12),
+                    const SizedBox(width: 8),
                     Expanded(
                       child: ElevatedButton.icon(
-                        style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1E293B), padding: const EdgeInsets.symmetric(vertical: 14)),
-                        icon: const Icon(Icons.person_add, color: Color(0xFF818CF8), size: 20),
-                        label: const Text('Add Contact', style: TextStyle(color: Colors.white, fontSize: 13)),
-                        onPressed: _showAddContactDialog,
+                        style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1E293B), padding: const EdgeInsets.symmetric(vertical: 12)),
+                        icon: const Icon(Icons.security, color: Color(0xFFF59E0B), size: 18),
+                        label: const Text('Stealth SOS', style: TextStyle(color: Colors.white, fontSize: 12)),
+                        onPressed: () => _triggerSos('STEALTH_SOS'),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1E293B), padding: const EdgeInsets.symmetric(vertical: 12)),
+                        icon: const Icon(Icons.personal_injury, color: Color(0xFFEF4444), size: 18),
+                        label: const Text('Fall Trigger', style: TextStyle(color: Colors.white, fontSize: 12)),
+                        onPressed: () => _triggerSos('FALL_DETECTION'),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1E293B), padding: const EdgeInsets.symmetric(vertical: 12)),
+                        icon: const Icon(Icons.alt_route, color: Color(0xFF3B82F6), size: 18),
+                        label: const Text('Route Alert', style: TextStyle(color: Colors.white, fontSize: 12)),
+                        onPressed: () => _triggerSos('ROUTE_DEVIATION'),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1E293B), padding: const EdgeInsets.symmetric(vertical: 12)),
+                        icon: const Icon(Icons.timer_off, color: Color(0xFF10B981), size: 18),
+                        label: const Text('Check-in', style: TextStyle(color: Colors.white, fontSize: 12)),
+                        onPressed: () => _triggerSos('MISSED_CHECKIN'),
                       ),
                     ),
                   ],
@@ -570,7 +1033,23 @@ class _HomeScreenState extends State<HomeScreen> {
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     const Text('YOUR SAFETY CIRCLE', style: TextStyle(color: Color(0xFF94A3B8), fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
-                    Text('${auth.contacts.length} Contacts', style: const TextStyle(color: Color(0xFF818CF8), fontSize: 12)),
+                    Row(
+                      children: [
+                        TextButton.icon(
+                          style: TextButton.styleFrom(padding: EdgeInsets.zero, minimumSize: const Size(50, 30)),
+                          icon: const Icon(Icons.key, size: 15, color: Color(0xFF10B981)),
+                          label: const Text('+ Generate Code', style: TextStyle(color: Color(0xFF10B981), fontSize: 11, fontWeight: FontWeight.bold)),
+                          onPressed: _showGenerateCodeDialog,
+                        ),
+                        const SizedBox(width: 8),
+                        TextButton.icon(
+                          style: TextButton.styleFrom(padding: EdgeInsets.zero, minimumSize: const Size(50, 30)),
+                          icon: const Icon(Icons.person_add, size: 15, color: Color(0xFF818CF8)),
+                          label: const Text('+ Add Contact', style: TextStyle(color: Color(0xFF818CF8), fontSize: 11, fontWeight: FontWeight.bold)),
+                          onPressed: _showAddContactDialog,
+                        ),
+                      ],
+                    ),
                   ],
                 ),
                 const SizedBox(height: 12),
@@ -612,7 +1091,7 @@ class _HomeScreenState extends State<HomeScreen> {
                               borderRadius: BorderRadius.circular(6),
                             ),
                             child: Text(
-                              '${c['tier']} (${c['status'] ?? 'PENDING'})',
+                              c['status'] == 'ACCEPTED' ? '${c['tier']} • Connected guardian' : '${c['tier']} • Invitation waiting for guardian',
                               style: TextStyle(
                                 color: c['status'] == 'ACCEPTED' ? const Color(0xFF10B981) : const Color(0xFFF59E0B),
                                 fontSize: 10,

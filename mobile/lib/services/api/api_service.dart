@@ -30,10 +30,15 @@ class ApiService {
     String? token,
     String? context,
     Map<String, dynamic>? detectionEvidence,
+    Map<String, dynamic>? sensorEvidence,
+    Map<String, dynamic>? locationEvidence,
+    Map<String, dynamic>? voiceEvidence,
+    Map<String, dynamic>? checkInEvidence,
+    bool isSimulated = false,
   }) async {
     final url = Uri.parse('$baseUrl/incidents');
 
-    final payload = {
+    final payload = <String, dynamic>{
       'type': type,
       'userId': userId ?? 'USR-MOBILE-01',
       'location': {
@@ -41,11 +46,17 @@ class ApiService {
         'longitude': longitude,
       },
       'context': context ?? 'Emergency SOS triggered from Safe360 Mobile App',
+      'isSimulated': isSimulated,
       'detectionEvidence': detectionEvidence ?? {
         'source': 'MOBILE_APP',
         'trigger': 'SOS_BUTTON',
       },
     };
+
+    if (sensorEvidence != null) payload['sensorEvidence'] = sensorEvidence;
+    if (locationEvidence != null) payload['locationEvidence'] = locationEvidence;
+    if (voiceEvidence != null) payload['voiceEvidence'] = voiceEvidence;
+    if (checkInEvidence != null) payload['checkInEvidence'] = checkInEvidence;
 
     try {
       final response = await http
@@ -73,6 +84,94 @@ class ApiService {
       if (e is Exception) rethrow;
       throw Exception('Unexpected error: $e');
     }
+  }
+
+  // --- PHASE 2 UNIFIED INPUT TRIGGERS ---
+  static Future<Map<String, dynamic>> triggerStealthSos({
+    required double latitude,
+    required double longitude,
+    String? userId,
+    String? token,
+  }) async {
+    return createIncident(
+      type: 'STEALTH_SOS',
+      latitude: latitude,
+      longitude: longitude,
+      userId: userId,
+      token: token,
+      context: 'Discreet stealth emergency triggered',
+      detectionEvidence: {'source': 'STEALTH_SOS', 'stealthMode': true},
+    );
+  }
+
+  static Future<Map<String, dynamic>> triggerVoiceSos({
+    required double latitude,
+    required double longitude,
+    String? userId,
+    String? token,
+    String? voicePhrase,
+  }) async {
+    return createIncident(
+      type: 'VOICE_SOS',
+      latitude: latitude,
+      longitude: longitude,
+      userId: userId,
+      token: token,
+      context: voicePhrase != null ? 'Voice phrase detected: "$voicePhrase"' : 'Emergency voice trigger detected',
+      detectionEvidence: {'source': 'VOICE_SOS', 'phrase': voicePhrase ?? 'Help me'},
+    );
+  }
+
+  static Future<Map<String, dynamic>> triggerFallDetection({
+    required double latitude,
+    required double longitude,
+    String? userId,
+    String? token,
+    double impactG = 4.2,
+  }) async {
+    return createIncident(
+      type: 'FALL_DETECTION',
+      latitude: latitude,
+      longitude: longitude,
+      userId: userId,
+      token: token,
+      context: 'High-G impact fall telemetry detected',
+      detectionEvidence: {'source': 'FALL_DETECTION', 'impactG': impactG, 'sensorConfirmed': true},
+    );
+  }
+
+  static Future<Map<String, dynamic>> triggerRouteDeviation({
+    required double latitude,
+    required double longitude,
+    String? userId,
+    String? token,
+    double deviationMeters = 450,
+  }) async {
+    return createIncident(
+      type: 'ROUTE_DEVIATION',
+      latitude: latitude,
+      longitude: longitude,
+      userId: userId,
+      token: token,
+      context: 'Significant route corridor deviation detected ($deviationMeters meters off-route)',
+      detectionEvidence: {'source': 'ROUTE_DEVIATION', 'deviationMeters': deviationMeters, 'thresholdMeters': 300},
+    );
+  }
+
+  static Future<Map<String, dynamic>> triggerMissedCheckIn({
+    String? userId,
+    String? token,
+    String? scheduledTime,
+  }) async {
+    return createIncident(
+      type: 'MISSED_CHECKIN',
+      latitude: 0,
+      longitude: 0,
+      userId: userId,
+      token: token,
+      context: 'Scheduled safety check-in deadline missed',
+      detectionEvidence: {'source': 'MISSED_CHECKIN', 'scheduledTime': scheduledTime ?? 'Configured Check-in'},
+    );
   }
 
   // --- AUTHENTICATION ---
@@ -214,5 +313,45 @@ class ApiService {
       return data;
     }
     throw Exception(data['message'] ?? 'Failed to acknowledge emergency');
+  }
+
+  static Future<Map<String, dynamic>> generateConnectionCode(String token) async {
+    final url = Uri.parse('$baseUrl/contacts/generate-code');
+    final response = await http.post(
+      url,
+      headers: getHeaders(token),
+    ).timeout(timeoutDuration);
+
+    final data = jsonDecode(response.body);
+    if ((response.statusCode == 200 || response.statusCode == 201) && data['success'] == true) {
+      return data;
+    }
+    throw Exception(data['message'] ?? 'Failed to generate connection code');
+  }
+
+  static Future<Map<String, dynamic>> cancelIncident(String incidentId, String token, [String? reason]) async {
+    final url = Uri.parse('$baseUrl/incidents/$incidentId/cancel');
+    final response = await http.post(
+      url,
+      headers: getHeaders(token),
+      body: jsonEncode({'reason': reason ?? 'False alarm cancelled by user'}),
+    ).timeout(timeoutDuration);
+
+    final data = jsonDecode(response.body);
+    if (response.statusCode == 200 && data['success'] == true) {
+      return data;
+    }
+    throw Exception(data['message'] ?? 'Failed to cancel incident');
+  }
+
+  static Future<Map<String, dynamic>> getIncidentById(String incidentId, [String? token]) async {
+    final url = Uri.parse('$baseUrl/incidents/$incidentId');
+    final response = await http.get(url, headers: getHeaders(token)).timeout(timeoutDuration);
+
+    final data = jsonDecode(response.body);
+    if (response.statusCode == 200 && data['success'] == true) {
+      return data;
+    }
+    throw Exception(data['message'] ?? 'Failed to fetch incident');
   }
 }

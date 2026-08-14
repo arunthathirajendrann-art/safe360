@@ -2,6 +2,137 @@ const EmergencyContact = require("../models/EmergencyContact");
 const User = require("../models/User");
 const Incident = require("../models/Incident");
 
+// Generate short random 6-character connection code (e.g. A7K9P2)
+function generate6DigitCode() {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let result = "";
+  for (let i = 0; i < 6; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return result;
+}
+
+// GENERATE DYNAMIC CONNECTION CODE (Mobile Protected Person)
+const generateConnectionCode = async (req, res) => {
+  try {
+    const ownerUserId = req.user.userId;
+    const code = generate6DigitCode();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 mins
+
+    const contactId = `CNT-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    const invitationToken = `INV-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+
+    // Create a pending invitation with connectionCode
+    const contact = await EmergencyContact.create({
+      contactId,
+      ownerUserId,
+      guardianUserId: null,
+      name: "Guardian",
+      phone: "Pending Connection",
+      email: "",
+      relationship: "Guardian",
+      tier: "PRIMARY",
+      status: "PENDING",
+      invitationToken,
+      connectionCode: code,
+      codeExpiresAt: expiresAt
+    });
+
+    res.status(201).json({
+      success: true,
+      message: "Connection code generated successfully",
+      code,
+      expiresAt,
+      contact
+    });
+
+  } catch (error) {
+    console.error("Generate connection code error:", error.message);
+    res.status(500).json({
+      success: false,
+      message: "Failed to generate connection code",
+      error: error.message
+    });
+  }
+};
+
+// CONNECT WITH CODE (Guardian Dashboard / Mobile)
+const connectWithCode = async (req, res) => {
+  try {
+    const { code } = req.body;
+    const guardianUser = req.user;
+
+    if (!code) {
+      return res.status(400).json({
+        success: false,
+        message: "Connection code is required"
+      });
+    }
+
+    const cleanCode = code.trim().toUpperCase();
+
+    const contact = await EmergencyContact.findOne({
+      connectionCode: cleanCode,
+      status: "PENDING"
+    });
+
+    if (!contact) {
+      return res.status(404).json({
+        success: false,
+        message: "Invalid connection code. Please check the code and try again."
+      });
+    }
+
+    if (contact.codeExpiresAt && new Date(contact.codeExpiresAt) < new Date()) {
+      contact.status = "EXPIRED";
+      await contact.save();
+      return res.status(400).json({
+        success: false,
+        message: "This connection code has expired. Please generate a new code on the protected person's app."
+      });
+    }
+
+    // Prevent connecting to oneself
+    if (contact.ownerUserId === guardianUser.userId) {
+      return res.status(400).json({
+        success: false,
+        message: "You cannot connect to yourself as a guardian."
+      });
+    }
+
+    // Link Guardian
+    contact.guardianUserId = guardianUser.userId;
+    contact.name = guardianUser.name;
+    contact.phone = guardianUser.phone;
+    contact.email = guardianUser.email;
+    contact.status = "ACCEPTED";
+    await contact.save();
+
+    // Fetch owner details
+    const owner = await User.findOne({ userId: contact.ownerUserId });
+
+    res.json({
+      success: true,
+      message: `Connected successfully with ${owner ? owner.name : "protected person"}!`,
+      contact,
+      protectedPerson: owner ? {
+        userId: owner.userId,
+        name: owner.name,
+        phone: owner.phone,
+        email: owner.email
+      } : { userId: contact.ownerUserId }
+    });
+
+  } catch (error) {
+    console.error("Connect with code error:", error.message);
+    res.status(500).json({
+      success: false,
+      message: "Failed to connect with code",
+      error: error.message
+    });
+  }
+};
+
 // ADD EMERGENCY CONTACT / GUARDIAN
 const addContact = async (req, res) => {
   try {
@@ -19,7 +150,6 @@ const addContact = async (req, res) => {
     const contactId = `CNT-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
     const invitationToken = `INV-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
 
-    // Check if the contact phone or email matches an existing registered user
     let guardianUserId = null;
     let initialStatus = "PENDING";
 
@@ -32,7 +162,6 @@ const addContact = async (req, res) => {
 
     if (matchedUser) {
       guardianUserId = matchedUser.userId;
-      // Auto-accept if the owner adds themselves or an already linked identity
     }
 
     const contact = await EmergencyContact.create({
@@ -152,12 +281,10 @@ const acceptInvitation = async (req, res) => {
       });
     }
 
-    // Link accepting guardian's userId to existing record
     contact.guardianUserId = acceptingUser.userId;
     contact.status = "ACCEPTED";
     await contact.save();
 
-    // Fetch owner profile
     const owner = await User.findOne({ userId: contact.ownerUserId });
 
     res.json({
@@ -177,7 +304,7 @@ const acceptInvitation = async (req, res) => {
   }
 };
 
-// GET CONNECTED PROTECTED PEOPLE FOR GUARDIAN / CAREGIVER
+// GET CONNECTED PROTECTED PEOPLE FOR GUARDIAN
 const getConnectedPeople = async (req, res) => {
   try {
     const guardianUserId = req.user.userId;
@@ -255,6 +382,8 @@ const getConnectedIncidents = async (req, res) => {
 };
 
 module.exports = {
+  generateConnectionCode,
+  connectWithCode,
   addContact,
   getContacts,
   deleteContact,

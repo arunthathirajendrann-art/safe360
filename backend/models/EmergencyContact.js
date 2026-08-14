@@ -44,7 +44,7 @@ const emergencyContactSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ["PENDING", "ACCEPTED", "DECLINED", "REVOKED"],
+      enum: ["PENDING", "ACCEPTED", "DECLINED", "REVOKED", "EXPIRED"],
       default: "PENDING"
     },
     invitationToken: {
@@ -52,6 +52,15 @@ const emergencyContactSchema = new mongoose.Schema(
       required: true,
       unique: true,
       index: true
+    },
+    connectionCode: {
+      type: String,
+      default: null,
+      index: true
+    },
+    codeExpiresAt: {
+      type: Date,
+      default: null
     }
   },
   { timestamps: true }

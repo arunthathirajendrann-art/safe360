@@ -2,9 +2,23 @@ const Incident = require("../../models/Incident");
 const EmergencyContact = require("../../models/EmergencyContact");
 const { escalateIncident } = require("./escalationEngine");
 const { sendNotification } = require("../notification/notificationEngine");
+const { broadcastToConnectedGuardians } = require("../realtime/sseService");
+
+function getTierTimeout(tier = "PRIMARY") {
+  if (tier === "PRIMARY") {
+    return parseInt(process.env.ESCALATION_TIMEOUT_PRIMARY || process.env.ESCALATION_TIMEOUT_SECONDS || "15", 10);
+  }
+  if (tier === "SECONDARY") {
+    return parseInt(process.env.ESCALATION_TIMEOUT_SECONDARY || process.env.ESCALATION_TIMEOUT_SECONDS || "15", 10);
+  }
+  if (tier === "TERTIARY") {
+    return parseInt(process.env.ESCALATION_TIMEOUT_TERTIARY || process.env.ESCALATION_TIMEOUT_SECONDS || "15", 10);
+  }
+  return parseInt(process.env.ESCALATION_TIMEOUT_SECONDS || "15", 10);
+}
 
 function getDefaultPolicy() {
-  const timeoutSec = parseInt(process.env.ESCALATION_TIMEOUT_SECONDS || "15", 10);
+  const timeoutSec = getTierTimeout("PRIMARY");
 
   return {
     primaryContact: {
@@ -42,7 +56,7 @@ async function getPolicyForUser(userId) {
         const secondary = dbContacts.find(c => c.tier === "SECONDARY") || dbContacts[1] || primary;
         const tertiary = dbContacts.find(c => c.tier === "TERTIARY") || dbContacts[2] || secondary;
 
-        const timeoutSec = parseInt(process.env.ESCALATION_TIMEOUT_SECONDS || "15", 10);
+        const timeoutSec = getTierTimeout("PRIMARY");
         return {
           primaryContact: { id: primary.contactId, name: primary.name, phone: primary.phone, channel: "DYNAMIC_DATABASE" },
           secondaryContact: { id: secondary.contactId, name: secondary.name, phone: secondary.phone, channel: "DYNAMIC_DATABASE" },
@@ -70,7 +84,7 @@ function buildHistoryEntry(tier, contact, defaultAction, defaultReason, notifRes
     action = isVoice ? "CALL_FAILED" : "CONTACT_FAILED";
     reason = `Notification failed via ${notifResult.provider}: ${notifResult.error || "Delivery error"}`;
   } else if (isVoice) {
-    action = "CALL_ATTEMPTED";
+    action = "CALL_DISPATCHED";
     reason = `${defaultReason} (Twilio Voice Call SID: ${notifResult.callSid || "N/A"})`;
   }
 
@@ -86,8 +100,6 @@ function buildHistoryEntry(tier, contact, defaultAction, defaultReason, notifRes
 
 /**
  * Initializes escalation for an incident based on priority policy.
- * LOW: Stays PENDING (routine monitoring).
- * MEDIUM/HIGH/CRITICAL: Contacts PRIMARY tier with calculated timeout.
  */
 async function initializeEscalation(incident, llmAssessment = {}) {
   const policy = (incident.escalationPolicy && incident.escalationPolicy.primaryContact)
@@ -98,7 +110,7 @@ async function initializeEscalation(incident, llmAssessment = {}) {
 
   const priority = incident.priority || llmAssessment.priority || "HIGH";
   const now = new Date();
-  const timeoutSec = policy.responseTimeoutSeconds || 15;
+  const timeoutSec = getTierTimeout("PRIMARY");
   const timeoutAt = new Date(now.getTime() + timeoutSec * 1000);
 
   if (priority === "LOW") {
@@ -122,6 +134,7 @@ async function initializeEscalation(incident, llmAssessment = {}) {
       timestamp: now
     });
 
+    await broadcastToConnectedGuardians(incident.userId, "INCIDENT_UPDATE", { incident });
     return incident;
   }
 
@@ -151,6 +164,7 @@ async function initializeEscalation(incident, llmAssessment = {}) {
   const historyEntry = buildHistoryEntry("PRIMARY", primary, "CONTACT_ATTEMPTED", initReason, notifResult);
   incident.escalationHistory.push(historyEntry);
 
+  await broadcastToConnectedGuardians(incident.userId, "INCIDENT_UPDATE", { incident });
   return incident;
 }
 
@@ -161,13 +175,12 @@ async function advanceEscalation(incident, reason) {
   const policy = incident.escalationPolicy || await getPolicyForUser(incident.userId);
   const currentTier = incident.escalationState ? incident.escalationState.currentTier : "NONE";
   const now = new Date();
-  const timeoutSec = policy.responseTimeoutSeconds || 15;
-  const timeoutAt = new Date(now.getTime() + timeoutSec * 1000);
 
   if (currentTier === "PRIMARY") {
-    // Advance to SECONDARY
+    const timeoutSec = getTierTimeout("SECONDARY");
+    const timeoutAt = new Date(now.getTime() + timeoutSec * 1000);
     const secondary = policy.secondaryContact;
-    const advanceReason = reason || `Primary contact did not respond within ${timeoutSec}s; advancing to secondary contact.`;
+    const advanceReason = reason || `Primary contact did not respond within ${getTierTimeout("PRIMARY")}s; advancing to secondary contact.`;
 
     incident.escalationState = {
       currentTier: "SECONDARY",
@@ -191,9 +204,10 @@ async function advanceEscalation(incident, reason) {
     incident.escalationHistory.push(historyEntry);
 
   } else if (currentTier === "SECONDARY") {
-    // Advance to TERTIARY
+    const timeoutSec = getTierTimeout("TERTIARY");
+    const timeoutAt = new Date(now.getTime() + timeoutSec * 1000);
     const tertiary = policy.tertiaryContact;
-    const advanceReason = reason || `Secondary contact did not respond within ${timeoutSec}s; advancing to tertiary contact.`;
+    const advanceReason = reason || `Secondary contact did not respond within ${getTierTimeout("SECONDARY")}s; advancing to tertiary contact.`;
 
     incident.escalationState = {
       currentTier: "TERTIARY",
@@ -217,7 +231,6 @@ async function advanceEscalation(incident, reason) {
     incident.escalationHistory.push(historyEntry);
 
   } else if (currentTier === "TERTIARY" || currentTier === "PRIMARY" || currentTier === "SECONDARY") {
-    // Advance to RESPONDER_FLEET
     const dispatchReason = reason || `All configured personal contacts failed to respond within timeout; escalating to emergency responder fleet.`;
 
     const escalationResult = escalateIncident(incident);
@@ -266,13 +279,14 @@ async function advanceEscalation(incident, reason) {
   }
 
   await incident.save();
+  await broadcastToConnectedGuardians(incident.userId, "INCIDENT_UPDATE", { incident });
   return incident;
 }
 
 /**
  * Acknowledges escalation for a contact, stopping further escalation.
  */
-async function acknowledgeEscalation(incidentId, tier, contactId) {
+async function acknowledgeEscalation(incidentId, tier, contactNameParam) {
   const incident = await Incident.findById(incidentId);
   if (!incident) {
     throw new Error(`Incident ${incidentId} not found`);
@@ -280,12 +294,13 @@ async function acknowledgeEscalation(incidentId, tier, contactId) {
 
   const now = new Date();
   const ackTier = tier || (incident.escalationState ? incident.escalationState.currentTier : "PRIMARY");
-  const contactName = incident.escalationState && incident.escalationState.currentContact
+  const contactName = contactNameParam || (incident.escalationState && incident.escalationState.currentContact
     ? incident.escalationState.currentContact.name
-    : "Configured Contact";
+    : "Configured Contact");
 
   const ackReason = `Contact ${contactName} acknowledged incident escalation at ${ackTier} tier. Escalation sequence halted.`;
 
+  incident.status = "ACKNOWLEDGED";
   incident.escalationState = {
     ...incident.escalationState,
     status: "ACKNOWLEDGED",
@@ -304,6 +319,7 @@ async function acknowledgeEscalation(incidentId, tier, contactId) {
   });
 
   await incident.save();
+  await broadcastToConnectedGuardians(incident.userId, "INCIDENT_UPDATE", { incident });
   return incident;
 }
 
@@ -323,7 +339,7 @@ async function processEscalationTimeouts() {
       const contactName = incident.escalationState && incident.escalationState.currentContact
         ? incident.escalationState.currentContact.name
         : "Contact";
-      const timeoutSec = incident.escalationPolicy ? incident.escalationPolicy.responseTimeoutSeconds : 15;
+      const timeoutSec = getTierTimeout(tier);
 
       const timeoutReason = `${tier} contact (${contactName}) did not acknowledge within ${timeoutSec}s timeout.`;
 
@@ -347,6 +363,7 @@ async function processEscalationTimeouts() {
 }
 
 module.exports = {
+  getTierTimeout,
   getDefaultPolicy,
   getPolicyForUser,
   initializeEscalation,
