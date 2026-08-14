@@ -1,4 +1,5 @@
 const Incident = require("../../models/Incident");
+const EmergencyContact = require("../../models/EmergencyContact");
 const { escalateIncident } = require("./escalationEngine");
 const { sendNotification } = require("../notification/notificationEngine");
 
@@ -26,6 +27,35 @@ function getDefaultPolicy() {
     },
     responseTimeoutSeconds: timeoutSec
   };
+}
+
+async function getPolicyForUser(userId) {
+  try {
+    if (userId) {
+      const dbContacts = await EmergencyContact.find({
+        ownerUserId: userId,
+        status: { $in: ["ACCEPTED", "PENDING"] }
+      });
+
+      if (dbContacts && dbContacts.length > 0) {
+        const primary = dbContacts.find(c => c.tier === "PRIMARY") || dbContacts[0];
+        const secondary = dbContacts.find(c => c.tier === "SECONDARY") || dbContacts[1] || primary;
+        const tertiary = dbContacts.find(c => c.tier === "TERTIARY") || dbContacts[2] || secondary;
+
+        const timeoutSec = parseInt(process.env.ESCALATION_TIMEOUT_SECONDS || "15", 10);
+        return {
+          primaryContact: { id: primary.contactId, name: primary.name, phone: primary.phone, channel: "DYNAMIC_DATABASE" },
+          secondaryContact: { id: secondary.contactId, name: secondary.name, phone: secondary.phone, channel: "DYNAMIC_DATABASE" },
+          tertiaryContact: { id: tertiary.contactId, name: tertiary.name, phone: tertiary.phone, channel: "DYNAMIC_DATABASE" },
+          responseTimeoutSeconds: timeoutSec
+        };
+      }
+    }
+  } catch (err) {
+    console.error("Error loading user contacts from DB, using fallback:", err.message);
+  }
+
+  return getDefaultPolicy();
 }
 
 /**
@@ -60,9 +90,9 @@ function buildHistoryEntry(tier, contact, defaultAction, defaultReason, notifRes
  * MEDIUM/HIGH/CRITICAL: Contacts PRIMARY tier with calculated timeout.
  */
 async function initializeEscalation(incident, llmAssessment = {}) {
-  const policy = incident.escalationPolicy && incident.escalationPolicy.primaryContact
+  const policy = (incident.escalationPolicy && incident.escalationPolicy.primaryContact)
     ? incident.escalationPolicy
-    : getDefaultPolicy();
+    : await getPolicyForUser(incident.userId);
 
   incident.escalationPolicy = policy;
 
@@ -128,7 +158,7 @@ async function initializeEscalation(incident, llmAssessment = {}) {
  * Advances escalation to the next tier deterministically.
  */
 async function advanceEscalation(incident, reason) {
-  const policy = incident.escalationPolicy || getDefaultPolicy();
+  const policy = incident.escalationPolicy || await getPolicyForUser(incident.userId);
   const currentTier = incident.escalationState ? incident.escalationState.currentTier : "NONE";
   const now = new Date();
   const timeoutSec = policy.responseTimeoutSeconds || 15;
@@ -318,6 +348,7 @@ async function processEscalationTimeouts() {
 
 module.exports = {
   getDefaultPolicy,
+  getPolicyForUser,
   initializeEscalation,
   advanceEscalation,
   acknowledgeEscalation,

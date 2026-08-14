@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'screens/home/home_screen.dart';
+import 'screens/onboarding/onboarding_screen.dart';
 
 void main() {
   runApp(const Safe360App());
@@ -13,13 +13,14 @@ class Safe360App extends StatelessWidget {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'SAFE360',
-      theme: ThemeData(
+      theme: ThemeData.dark().copyWith(
+        scaffoldBackgroundColor: const Color(0xFF0F172A),
         colorScheme: ColorScheme.fromSeed(
-          seedColor: Colors.red,
+          seedColor: const Color(0xFF6366F1),
+          brightness: Brightness.dark,
         ),
-        useMaterial3: true,
       ),
-      home: const HomeScreen(),
+      home: const OnboardingScreen(),
     );
   }
 }
