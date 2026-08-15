@@ -19,137 +19,211 @@ const {
 const { sendNotification } = require("../services/notification/notificationEngine");
 const { broadcastToConnectedGuardians } = require("../services/realtime/sseService");
 
-// CREATE & AUTOMATICALLY ORCHESTRATE INCIDENT
-const createIncident = async (req, res) => {
-  try {
-    const { type, userId, location, context, detectionEvidence, escalationPolicy } = req.body;
+const createIncidentCore = async ({
+  type,
+  source,
+  userId,
+  location,
+  context,
+  detectionEvidence,
+  sensorEvidence,
+  locationEvidence,
+  voiceEvidence,
+  checkInEvidence,
+  isSimulated = false,
+  escalationPolicy = {}
+}) => {
+  const validTypes = [
+    "SOS",
+    "MANUAL_SOS",
+    "STEALTH_SOS",
+    "FALL",
+    "FALL_DETECTION",
+    "ROUTE_DEVIATION",
+    "MISSED_CHECKIN",
+    "VOICE",
+    "VOICE_SOS"
+  ];
+  const validatedType = validTypes.includes(type) ? type : "SOS";
 
-    const validTypes = ["SOS", "FALL", "VOICE", "STEALTH_SOS", "ROUTE_DEVIATION", "MISSED_CHECKIN"];
-    const validatedType = validTypes.includes(type) ? type : "SOS";
+  const sourceMap = {
+    "SOS": "MANUAL_SOS",
+    "MANUAL_SOS": "MANUAL_SOS",
+    "STEALTH_SOS": "STEALTH_SOS",
+    "VOICE": "VOICE_SOS",
+    "VOICE_SOS": "VOICE_SOS",
+    "FALL": "FALL_DETECTION",
+    "FALL_DETECTION": "FALL_DETECTION",
+    "ROUTE_DEVIATION": "ROUTE_DEVIATION",
+    "MISSED_CHECKIN": "MISSED_CHECKIN"
+  };
+  const validatedSource = sourceMap[validatedType] || source || "MANUAL_SOS";
+  const targetUserId = userId || "USR-UNKNOWN";
 
-    const sourceMap = {
-      "SOS": "MANUAL_SOS",
-      "MANUAL_SOS": "MANUAL_SOS",
-      "STEALTH_SOS": "STEALTH_SOS",
-      "VOICE": "VOICE_SOS",
-      "VOICE_SOS": "VOICE_SOS",
-      "FALL": "FALL_DETECTION",
-      "FALL_DETECTION": "FALL_DETECTION",
-      "ROUTE_DEVIATION": "ROUTE_DEVIATION",
-      "MISSED_CHECKIN": "MISSED_CHECKIN"
-    };
-    const validatedSource = sourceMap[type] || req.body.source || "MANUAL_SOS";
-    const targetUserId = userId || (req.user ? req.user.userId : "USR-UNKNOWN");
-
-    // 0. Idempotency Check: Prevent duplicate SOS within 30 seconds for same user & source
+  // Idempotency Check: Prevent duplicate SOS within 30 seconds for same user & source
+  let existingActive = null;
+  if (mongoose.connection.readyState === 1) {
     const thirtySecAgo = new Date(Date.now() - 30 * 1000);
-    const existingActive = await Incident.findOne({
+    existingActive = await Incident.findOne({
       userId: targetUserId,
       source: validatedSource,
       status: { $in: ["DETECTED", "UNDERSTOOD", "ASSESSED", "ESCALATING"] },
       createdAt: { $gte: thirtySecAgo }
     });
+  }
 
-    if (existingActive) {
-      return res.status(200).json({
-        success: true,
-        message: "Existing active emergency returned (duplicate protection applied)",
-        incident: existingActive,
-        isDuplicate: true
-      });
-    }
+  if (existingActive) {
+    return existingActive;
+  }
 
-    // 1. Run Phase 5 Multi-Signal Safety Risk Fusion Assessment
-    const riskAssessment = evaluateSafetyRisk({
-      source: validatedSource,
-      type: validatedType,
-      context: context || "",
-      detectionEvidence: detectionEvidence || {},
-      sensorEvidence: req.body.sensorEvidence || null,
-      locationEvidence: req.body.locationEvidence || null,
-      voiceEvidence: req.body.voiceEvidence || null,
-      checkInEvidence: req.body.checkInEvidence || null,
-      isSimulated: req.body.isSimulated || false
-    });
+  const triggerMap = {
+    "MANUAL_SOS": "SOS_BUTTON",
+    "SOS": "SOS_BUTTON",
+    "STEALTH_SOS": "STEALTH_SOS",
+    "FALL_DETECTION": "FALL_DETECTION",
+    "FALL": "FALL_DETECTION",
+    "ROUTE_DEVIATION": "ROUTE_ALERT",
+    "VOICE_SOS": "VOICE_SOS",
+    "VOICE": "VOICE_SOS",
+    "MISSED_CHECKIN": "CHECK_IN_TIMEOUT"
+  };
+  const expectedTrigger = triggerMap[validatedSource] || triggerMap[validatedType] || "SOS_BUTTON";
+  const rawTrigger = detectionEvidence?.trigger;
+  const validatedTrigger = rawTrigger === expectedTrigger ? rawTrigger : expectedTrigger;
 
-    // Initial record creation in DETECTED state
-    const incident = await Incident.create({
-      type: validatedType,
-      source: validatedSource,
-      userId: targetUserId,
-      location: location || {},
-      context: context || riskAssessment.assessmentReason,
-      detectionEvidence: detectionEvidence || {},
-      confidence: riskAssessment.confidence,
-      isSimulated: Boolean(req.body.isSimulated),
-      assessmentReason: riskAssessment.assessmentReason,
-      riskFactors: riskAssessment.riskFactors,
-      sensorEvidence: req.body.sensorEvidence || null,
-      locationEvidence: req.body.locationEvidence || null,
-      voiceEvidence: req.body.voiceEvidence || null,
-      checkInEvidence: req.body.checkInEvidence || null,
-      status: "DETECTED",
-      priority: riskAssessment.priority || "HIGH",
-      escalationPolicy: escalationPolicy || {}
-    });
+  const sanitizedDetectionEvidence = {
+    ...(typeof detectionEvidence === "object" ? detectionEvidence : {}),
+    source: validatedSource,
+    trigger: validatedTrigger
+  };
 
-    // 2. LLM Analysis via Google Gemini API
-    const llmAssessment = await analyzeIncident({
-      type: incident.type,
-      context: incident.context,
-      detectionEvidence: incident.detectionEvidence
-    });
+  // 1. Run Phase 5 Multi-Signal Safety Risk Fusion Assessment
+  const riskAssessment = evaluateSafetyRisk({
+    source: validatedSource,
+    type: validatedType,
+    context: context || "",
+    detectionEvidence: sanitizedDetectionEvidence,
+    sensorEvidence: sensorEvidence || null,
+    locationEvidence: locationEvidence || null,
+    voiceEvidence: voiceEvidence || null,
+    checkInEvidence: checkInEvidence || null,
+    isSimulated: Boolean(isSimulated)
+  });
 
-    // Merge LLM assessment into evidence for auditability
-    const existingEvidence = typeof incident.detectionEvidence === "object" ? incident.detectionEvidence : {};
-    incident.detectionEvidence = {
-      ...existingEvidence,
-      riskFusion: riskAssessment,
-      llmAssessment: {
-        incidentType: llmAssessment.incidentType,
-        summary: llmAssessment.summary,
-        priority: llmAssessment.priority,
-        requiresImmediateResponse: llmAssessment.requiresImmediateResponse,
-        isFallback: llmAssessment.isFallback
-      }
+  const incidentData = {
+    _id: `INC-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+    type: validatedType,
+    source: validatedSource,
+    userId: targetUserId,
+    location: location || {},
+    context: context || riskAssessment.assessmentReason,
+    detectionEvidence: sanitizedDetectionEvidence,
+    confidence: riskAssessment.confidence,
+    isSimulated: Boolean(isSimulated),
+    assessmentReason: riskAssessment.assessmentReason,
+    riskFactors: riskAssessment.riskFactors,
+    sensorEvidence: sensorEvidence || null,
+    locationEvidence: locationEvidence || null,
+    voiceEvidence: voiceEvidence || null,
+    checkInEvidence: checkInEvidence || null,
+    status: "DETECTED",
+    priority: riskAssessment.priority || "HIGH",
+    escalationPolicy: escalationPolicy || {},
+    escalationState: {},
+    escalationHistory: []
+  };
+
+  let incident = null;
+  if (mongoose.connection.readyState === 1) {
+    incident = await Incident.create(incidentData);
+  } else {
+    incident = {
+      ...incidentData,
+      save: async function () { return this; }
     };
+  }
 
-    if (!incident.context && llmAssessment.summary) {
-      incident.context = llmAssessment.summary;
+  // 2. LLM Analysis via Google Gemini API
+  const llmAssessment = await analyzeIncident({
+    type: incident.type,
+    context: incident.context,
+    detectionEvidence: incident.detectionEvidence
+  });
+
+  // Merge LLM assessment into evidence for auditability
+  const existingEvidence = typeof incident.detectionEvidence === "object" ? incident.detectionEvidence : {};
+  incident.detectionEvidence = {
+    ...existingEvidence,
+    riskFusion: riskAssessment,
+    llmAssessment: {
+      incidentType: llmAssessment.incidentType,
+      summary: llmAssessment.summary,
+      priority: llmAssessment.priority,
+      requiresImmediateResponse: llmAssessment.requiresImmediateResponse,
+      isFallback: llmAssessment.isFallback
     }
+  };
 
-    // 3. Automatic transition: DETECTED -> UNDERSTOOD
-    if (canTransition(incident.status, "UNDERSTOOD")) {
-      incident.status = "UNDERSTOOD";
+  if (!incident.context && llmAssessment.summary) {
+    incident.context = llmAssessment.summary;
+  }
+
+  // 3. Automatic transition: DETECTED -> UNDERSTOOD
+  if (canTransition(incident.status, "UNDERSTOOD")) {
+    incident.status = "UNDERSTOOD";
+  }
+
+  // 4. Automatic transition: UNDERSTOOD -> ASSESSED
+  if (canTransition(incident.status, "ASSESSED")) {
+    incident.status = "ASSESSED";
+    incident.priority = riskAssessment.priority || llmAssessment.priority || "HIGH";
+  }
+
+  // 5. Initialize Adaptive Multi-Tier Escalation
+  await initializeEscalation(incident, llmAssessment);
+
+  if (
+    llmAssessment.requiresImmediateResponse ||
+    incident.priority === "HIGH" ||
+    incident.priority === "CRITICAL"
+  ) {
+    if (canTransition(incident.status, "ESCALATING")) {
+      incident.status = "ESCALATING";
     }
+  }
 
-    // 4. Automatic transition: UNDERSTOOD -> ASSESSED
-    if (canTransition(incident.status, "ASSESSED")) {
-      incident.status = "ASSESSED";
-      incident.priority = riskAssessment.priority || llmAssessment.priority || "HIGH";
-    }
+  await incident.save();
+  await broadcastToConnectedGuardians(targetUserId, "INCIDENT_CREATED", { incident });
 
-    // 5. Initialize Adaptive Multi-Tier Escalation
-    await initializeEscalation(incident, llmAssessment);
+  return incident;
+};
 
-    if (
-      llmAssessment.requiresImmediateResponse ||
-      incident.priority === "HIGH" ||
-      incident.priority === "CRITICAL"
-    ) {
-      if (canTransition(incident.status, "ESCALATING")) {
-        incident.status = "ESCALATING";
-      }
-    }
+// CREATE & AUTOMATICALLY ORCHESTRATE INCIDENT EXPRESS HANDLER
+const createIncident = async (req, res) => {
+  try {
+    const { type, source, userId, location, context, detectionEvidence, sensorEvidence, locationEvidence, voiceEvidence, checkInEvidence, isSimulated, escalationPolicy } = req.body;
+    const targetUserId = userId || (req.user ? req.user.userId : "USR-UNKNOWN");
 
-    await incident.save();
-    await broadcastToConnectedGuardians(targetUserId, "INCIDENT_CREATED", { incident });
+    const incident = await createIncidentCore({
+      type,
+      source,
+      userId: targetUserId,
+      location,
+      context,
+      detectionEvidence,
+      sensorEvidence,
+      locationEvidence,
+      voiceEvidence,
+      checkInEvidence,
+      isSimulated,
+      escalationPolicy
+    });
 
     res.status(201).json({
       success: true,
       message: `Incident created and automatically processed to ${incident.status}`,
       incident,
-      assessment: llmAssessment,
+      assessment: incident.detectionEvidence?.llmAssessment || {},
       escalationState: incident.escalationState,
       escalationHistory: incident.escalationHistory
     });
@@ -557,6 +631,7 @@ const respondToIncident = async (req, res) => {
 
 module.exports = {
   createIncident,
+  createIncidentCore,
   updateIncidentStatus,
   getIncidents,
   getIncident,

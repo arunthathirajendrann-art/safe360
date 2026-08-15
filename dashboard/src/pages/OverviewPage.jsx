@@ -483,7 +483,7 @@ export default function OverviewPage({
                 <div style={{ background: "#0F172A", padding: "1rem", borderRadius: "10px", border: "1px solid #334155" }}>
                   <div style={{ fontSize: "0.75rem", color: "#94A3B8", fontWeight: "700", marginBottom: "6px" }}>AI SITUATION ASSESSMENT</div>
                   <div style={{ fontSize: "0.85rem", color: "#E2E8F0", lineHeight: 1.4 }}>
-                    {currentEmergency.context || currentEmergency.detectionEvidence?.llmAssessment?.summary || "AI assessment unavailable — deterministic safety rules applied."}
+                    {currentEmergency.detectionEvidence?.llmAssessment?.summary || currentEmergency.context || "AI assessment unavailable — deterministic safety rules applied."}
                   </div>
                 </div>
               </div>

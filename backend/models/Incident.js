@@ -46,7 +46,17 @@ const incidentSchema = new mongoose.Schema(
   {
     type: {
       type: String,
-      enum: ["SOS", "FALL", "VOICE", "STEALTH_SOS", "ROUTE_DEVIATION", "MISSED_CHECKIN"],
+      enum: [
+        "SOS",
+        "MANUAL_SOS",
+        "FALL",
+        "FALL_DETECTION",
+        "VOICE",
+        "VOICE_SOS",
+        "STEALTH_SOS",
+        "ROUTE_DEVIATION",
+        "MISSED_CHECKIN"
+      ],
       required: true
     },
 

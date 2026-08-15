@@ -1,3 +1,4 @@
+const mongoose = require("mongoose");
 const Incident = require("../../models/Incident");
 const EmergencyContact = require("../../models/EmergencyContact");
 const { escalateIncident } = require("./escalationEngine");
@@ -45,7 +46,7 @@ function getDefaultPolicy() {
 
 async function getPolicyForUser(userId) {
   try {
-    if (userId) {
+    if (userId && mongoose.connection && mongoose.connection.readyState === 1) {
       const dbContacts = await EmergencyContact.find({
         ownerUserId: userId,
         status: { $in: ["ACCEPTED", "PENDING"] }

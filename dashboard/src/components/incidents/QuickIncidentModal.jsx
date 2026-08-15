@@ -4,8 +4,8 @@ import { Siren, Activity, Mic, X, Send, AlertTriangle, Loader2 } from "lucide-re
 export default function QuickIncidentModal({ onClose, onCreateIncident }) {
   const [type, setType] = useState("SOS");
   const [userId, setUserId] = useState(() => `USR-${Math.floor(1000 + Math.random() * 9000)}`);
-  const [latitude, setLatitude] = useState(37.7749);
-  const [longitude, setLongitude] = useState(-122.4194);
+  const [latitude, setLatitude] = useState(13.0827);
+  const [longitude, setLongitude] = useState(80.2707);
   const [context, setContext] = useState("Emergency trigger generated from Safe360 Command Center Simulator.");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState(null);

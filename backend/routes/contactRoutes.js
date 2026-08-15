@@ -28,22 +28,40 @@ router.get("/guardians/people", getConnectedPeople);
 router.get("/guardians/incidents", getConnectedIncidents);
 
 // Phase 5 Safety Check-in Routes
-router.post("/checkin/schedule", (req, res) => {
-  const { intervalMinutes } = req.body;
-  const session = scheduleCheckIn({ userId: req.user ? req.user.userId : "USR-GUEST", intervalMinutes: intervalMinutes || 30 });
-  res.json({ success: true, message: `Safety check-in scheduled for every ${session.intervalMinutes} minutes`, session });
+router.post("/checkin/schedule", async (req, res) => {
+  const { intervalMinutes, isSimulated, latitude, longitude } = req.body;
+  const session = await scheduleCheckIn({
+    userId: req.user ? req.user.userId : "USR-GUEST",
+    intervalMinutes: intervalMinutes || 30,
+    isSimulated: Boolean(isSimulated),
+    location: (latitude && longitude) ? { latitude, longitude } : null
+  });
+  res.json({ success: true, message: `Safety check-in scheduled for ${session.intervalMinutes} minutes`, session });
 });
 
-router.post("/checkin/respond", (req, res) => {
+router.post("/checkin/respond", async (req, res) => {
   const userId = req.user ? req.user.userId : "USR-GUEST";
-  const result = respondToCheckIn(userId);
+  const { checkInId } = req.body;
+  const result = await respondToCheckIn(userId, checkInId);
   res.json(result);
 });
 
-router.get("/checkin/status", (req, res) => {
+router.post("/checkin/cancel", async (req, res) => {
   const userId = req.user ? req.user.userId : "USR-GUEST";
-  const status = getCheckInStatus(userId);
+  const { checkInId } = req.body;
+  const result = await cancelCheckIn(userId, checkInId);
+  res.json(result);
+});
+
+router.get("/checkin/status", async (req, res) => {
+  const userId = req.user ? req.user.userId : "USR-GUEST";
+  const status = await getCheckInStatus(userId);
   res.json({ success: true, ...status });
+});
+
+router.post("/checkin/process-expired", async (req, res) => {
+  const createdIncidents = await processExpiredCheckIns();
+  res.json({ success: true, processedCount: createdIncidents.length, incidents: createdIncidents });
 });
 
 // Real-Time SSE Stream Endpoint for Guardians

@@ -38,12 +38,14 @@ export function formatTimeAgo(dateString) {
 }
 
 export function formatLocation(location) {
-  if (!location) return "Coordinates Unavailable";
+  if (!location) return "GPS Location Unavailable";
   if (typeof location === "string") return location;
-  if (location.latitude !== undefined && location.longitude !== undefined) {
-    return `${Number(location.latitude).toFixed(4)}° N, ${Number(location.longitude).toFixed(4)}° E`;
+  const lat = Number(location.latitude);
+  const lng = Number(location.longitude);
+  if (isNaN(lat) || isNaN(lng) || (lat === 0 && lng === 0)) {
+    return "GPS Location Unavailable";
   }
-  return "Unknown Location";
+  return `${lat.toFixed(4)}° N, ${lng.toFixed(4)}° E`;
 }
 
 export function formatIncidentId(id) {

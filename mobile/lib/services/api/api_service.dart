@@ -21,6 +21,50 @@ class ApiService {
     return headers;
   }
 
+  static String resolveTriggerForType(String type) {
+    switch (type.toUpperCase()) {
+      case 'SOS':
+      case 'MANUAL_SOS':
+        return 'SOS_BUTTON';
+      case 'STEALTH_SOS':
+        return 'STEALTH_SOS';
+      case 'FALL':
+      case 'FALL_DETECTION':
+        return 'FALL_DETECTION';
+      case 'ROUTE_DEVIATION':
+        return 'ROUTE_ALERT';
+      case 'VOICE':
+      case 'VOICE_SOS':
+        return 'VOICE_SOS';
+      case 'MISSED_CHECKIN':
+        return 'CHECK_IN_TIMEOUT';
+      default:
+        return 'SOS_BUTTON';
+    }
+  }
+
+  static String resolveSourceForType(String type) {
+    switch (type.toUpperCase()) {
+      case 'SOS':
+      case 'MANUAL_SOS':
+        return 'MANUAL_SOS';
+      case 'STEALTH_SOS':
+        return 'STEALTH_SOS';
+      case 'FALL':
+      case 'FALL_DETECTION':
+        return 'FALL_DETECTION';
+      case 'ROUTE_DEVIATION':
+        return 'ROUTE_DEVIATION';
+      case 'VOICE':
+      case 'VOICE_SOS':
+        return 'VOICE_SOS';
+      case 'MISSED_CHECKIN':
+        return 'MISSED_CHECKIN';
+      default:
+        return 'MANUAL_SOS';
+    }
+  }
+
   // --- INCIDENTS ---
   static Future<Map<String, dynamic>> createIncident({
     required String type,
@@ -38,19 +82,29 @@ class ApiService {
   }) async {
     final url = Uri.parse('$baseUrl/incidents');
 
+    final expectedTrigger = resolveTriggerForType(type);
+    final expectedSource = resolveSourceForType(type);
+
+    final mergedEvidence = <String, dynamic>{
+      'source': expectedSource,
+      'trigger': expectedTrigger,
+      ...?detectionEvidence,
+    };
+    if (detectionEvidence != null && detectionEvidence['trigger'] != null) {
+      mergedEvidence['trigger'] = detectionEvidence['trigger'];
+    }
+
     final payload = <String, dynamic>{
       'type': type,
+      'source': expectedSource,
       'userId': userId ?? 'USR-MOBILE-01',
       'location': {
         'latitude': latitude,
         'longitude': longitude,
       },
-      'context': context ?? 'Emergency SOS triggered from Safe360 Mobile App',
+      'context': context ?? 'Emergency signal triggered from Safe360 Mobile App',
       'isSimulated': isSimulated,
-      'detectionEvidence': detectionEvidence ?? {
-        'source': 'MOBILE_APP',
-        'trigger': 'SOS_BUTTON',
-      },
+      'detectionEvidence': mergedEvidence,
     };
 
     if (sensorEvidence != null) payload['sensorEvidence'] = sensorEvidence;
@@ -100,7 +154,7 @@ class ApiService {
       userId: userId,
       token: token,
       context: 'Discreet stealth emergency triggered',
-      detectionEvidence: {'source': 'STEALTH_SOS', 'stealthMode': true},
+      detectionEvidence: {'source': 'STEALTH_SOS', 'trigger': 'STEALTH_SOS', 'stealthMode': true},
     );
   }
 
@@ -118,8 +172,49 @@ class ApiService {
       userId: userId,
       token: token,
       context: voicePhrase != null ? 'Voice phrase detected: "$voicePhrase"' : 'Emergency voice trigger detected',
-      detectionEvidence: {'source': 'VOICE_SOS', 'phrase': voicePhrase ?? 'Help me'},
+      detectionEvidence: {'source': 'VOICE_SOS', 'trigger': 'VOICE_SOS', 'phrase': voicePhrase ?? 'Help me'},
     );
+  }
+
+  static Future<Map<String, dynamic>> sendVoiceAssistantChat({
+    required String transcript,
+    List<Map<String, String>>? conversationHistory,
+    double? latitude,
+    double? longitude,
+    String? userId,
+    String? token,
+  }) async {
+    final url = Uri.parse('$baseUrl/voice/chat');
+    final payload = <String, dynamic>{
+      'transcript': transcript,
+      'conversationHistory': conversationHistory ?? [],
+      if (latitude != null && longitude != null)
+        'userLocation': {'latitude': latitude, 'longitude': longitude},
+      if (userId != null) 'userId': userId,
+    };
+
+    try {
+      final response = await http
+          .post(
+            url,
+            headers: getHeaders(token),
+            body: jsonEncode(payload),
+          )
+          .timeout(timeoutDuration);
+
+      final Map<String, dynamic> responseData = jsonDecode(response.body);
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        return responseData['data'] ?? responseData;
+      } else {
+        throw Exception(responseData['message'] ?? 'Voice service error (${response.statusCode})');
+      }
+    } catch (e) {
+      return {
+        'replyText': 'I am having trouble connecting to the voice service right now. If you are in danger, please use the SOS button immediately.',
+        'intent': transcript.toLowerCase().contains('sos') || transcript.toLowerCase().contains('help') ? 'SOS_REQUEST' : 'GENERAL_CONVERSATION',
+        'requiresConfirmation': true,
+      };
+    }
   }
 
   static Future<Map<String, dynamic>> triggerFallDetection({
@@ -136,7 +231,7 @@ class ApiService {
       userId: userId,
       token: token,
       context: 'High-G impact fall telemetry detected',
-      detectionEvidence: {'source': 'FALL_DETECTION', 'impactG': impactG, 'sensorConfirmed': true},
+      detectionEvidence: {'source': 'FALL_DETECTION', 'trigger': 'FALL_DETECTION', 'impactG': impactG, 'sensorConfirmed': true},
     );
   }
 
@@ -154,7 +249,7 @@ class ApiService {
       userId: userId,
       token: token,
       context: 'Significant route corridor deviation detected ($deviationMeters meters off-route)',
-      detectionEvidence: {'source': 'ROUTE_DEVIATION', 'deviationMeters': deviationMeters, 'thresholdMeters': 300},
+      detectionEvidence: {'source': 'ROUTE_DEVIATION', 'trigger': 'ROUTE_ALERT', 'deviationMeters': deviationMeters, 'thresholdMeters': 300},
     );
   }
 
@@ -170,8 +265,45 @@ class ApiService {
       userId: userId,
       token: token,
       context: 'Scheduled safety check-in deadline missed',
-      detectionEvidence: {'source': 'MISSED_CHECKIN', 'scheduledTime': scheduledTime ?? 'Configured Check-in'},
+      detectionEvidence: {'source': 'MISSED_CHECKIN', 'trigger': 'CHECK_IN_TIMEOUT', 'scheduledTime': scheduledTime ?? 'Configured Check-in'},
     );
+  }
+
+  static Future<Map<String, dynamic>> scheduleCheckIn(int intervalMinutes, String? token, {bool isSimulated = false, double? latitude, double? longitude}) async {
+    final url = Uri.parse('$baseUrl/contacts/checkin/schedule');
+    final response = await http
+        .post(url, headers: getHeaders(token), body: jsonEncode({
+          'intervalMinutes': intervalMinutes,
+          'isSimulated': isSimulated,
+          'latitude': latitude,
+          'longitude': longitude,
+        }))
+        .timeout(timeoutDuration);
+    return jsonDecode(response.body);
+  }
+
+  static Future<Map<String, dynamic>> respondToCheckIn(String? token, {String? checkInId}) async {
+    final url = Uri.parse('$baseUrl/contacts/checkin/respond');
+    final response = await http
+        .post(url, headers: getHeaders(token), body: jsonEncode({'checkInId': checkInId}))
+        .timeout(timeoutDuration);
+    return jsonDecode(response.body);
+  }
+
+  static Future<Map<String, dynamic>> cancelCheckIn(String? token, {String? checkInId}) async {
+    final url = Uri.parse('$baseUrl/contacts/checkin/cancel');
+    final response = await http
+        .post(url, headers: getHeaders(token), body: jsonEncode({'checkInId': checkInId}))
+        .timeout(timeoutDuration);
+    return jsonDecode(response.body);
+  }
+
+  static Future<Map<String, dynamic>> getCheckInStatus(String? token) async {
+    final url = Uri.parse('$baseUrl/contacts/checkin/status');
+    final response = await http
+        .get(url, headers: getHeaders(token))
+        .timeout(timeoutDuration);
+    return jsonDecode(response.body);
   }
 
   // --- AUTHENTICATION ---

@@ -6,6 +6,8 @@ import 'package:sensors_plus/sensors_plus.dart';
 import '../../services/auth_service.dart';
 import '../../services/api/api_service.dart';
 import '../onboarding/onboarding_screen.dart';
+import '../sos/stealth_calculator_screen.dart';
+import '../voice/voice_assistant_screen.dart';
 
 enum FallDialogResult { cancelled, immediate, timeout }
 
@@ -68,8 +70,8 @@ class _FallConfirmationDialogState extends State<FallConfirmationDialog> {
           const SizedBox(width: 12),
           const Expanded(
             child: Text(
-              'Possible Fall Detected',
-              style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+              '⚠️ POSSIBLE FALL DETECTED',
+              style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
             ),
           ),
         ],
@@ -79,7 +81,7 @@ class _FallConfirmationDialogState extends State<FallConfirmationDialog> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Text(
-            'High-impact acceleration spike detected (3.1g).\nPost-impact inactivity: 8s.\n\nEmergency alert will trigger automatically if you do not respond.',
+            'We detected a possible fall. Are you okay?\nEmergency will be triggered if you don\'t respond.',
             style: TextStyle(color: Color(0xFFCBD5E1), fontSize: 13, height: 1.4),
           ),
           const SizedBox(height: 16),
@@ -94,15 +96,15 @@ class _FallConfirmationDialogState extends State<FallConfirmationDialog> {
             child: Column(
               children: [
                 const Text(
-                  'AUTOMATIC EMERGENCY ALERT IN',
+                  'COUNTDOWN TO AUTOMATIC SOS',
                   style: TextStyle(color: Color(0xFF94A3B8), fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.1),
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  '00:${_secondsRemaining.toString().padLeft(2, '0')}',
+                  '$_secondsRemaining',
                   style: const TextStyle(
                     color: Color(0xFFEF4444),
-                    fontSize: 36,
+                    fontSize: 42,
                     fontWeight: FontWeight.w800,
                     letterSpacing: 2,
                   ),
@@ -131,7 +133,7 @@ class _FallConfirmationDialogState extends State<FallConfirmationDialog> {
                   ),
                   icon: const Icon(Icons.check_circle_outline, color: Colors.white),
                   label: const Text(
-                    'I\'M OK (CANCEL EMERGENCY)',
+                    'I\'M OK — CANCEL',
                     style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
                   ),
                   onPressed: () {
@@ -151,7 +153,7 @@ class _FallConfirmationDialogState extends State<FallConfirmationDialog> {
                   ),
                   icon: const Icon(Icons.emergency, color: Color(0xFFEF4444), size: 16),
                   label: const Text(
-                    'SEND SOS IMMEDIATELY',
+                    'SEND SOS NOW',
                     style: TextStyle(color: Color(0xFFEF4444), fontSize: 12, fontWeight: FontWeight.bold),
                   ),
                   onPressed: () {
@@ -175,7 +177,7 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   bool _isEmergencyActive = false;
   bool _isSendingSos = false;
   bool _isFallDialogShowing = false;
@@ -189,48 +191,126 @@ class _HomeScreenState extends State<HomeScreen> {
   final TextEditingController _contactPhoneController = TextEditingController();
   String _selectedTier = 'PRIMARY';
 
+  // Diagnostic counters logged every 30 seconds
+  int _sensorEventCount = 0;
+  int _sensorSubCreationCount = 0;
+  int _sensorSubCancellationCount = 0;
+  int _locationRequestCount = 0;
+  int _apiRequestCount = 0;
+  int _timerCreationCount = 0;
+  Timer? _diagnosticTimer;
+
   @override
   void initState() {
     super.initState();
-    final auth = AuthService();
-    auth.fetchContacts();
-    _initAccelerometerListener();
+    WidgetsBinding.instance.addObserver(this);
+    _startDiagnosticTimer();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final auth = AuthService();
+      auth.fetchContacts();
+      _initAccelerometerListener();
+    });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      _pauseAccelerometerListener();
+    } else if (state == AppLifecycleState.resumed) {
+      _resumeAccelerometerListener();
+    }
+  }
+
+  void _startDiagnosticTimer() {
+    _timerCreationCount++;
+    _diagnosticTimer?.cancel();
+    _diagnosticTimer = Timer.periodic(const Duration(seconds: 30), (timer) {
+      debugPrint('[SAFE360 DIAGNOSTICS] Events: $_sensorEventCount | Subs Created: $_sensorSubCreationCount | Subs Cancelled: $_sensorSubCancellationCount | Loc Requests: $_locationRequestCount | API Requests: $_apiRequestCount | Timers: $_timerCreationCount');
+    });
   }
 
   void _initAccelerometerListener() {
+    if (_accelSubscription != null) return; // Guard: Exactly one active subscription
     try {
-      _accelSubscription = userAccelerometerEventStream().listen((UserAccelerometerEvent event) {
-        final double magnitude = sqrt(event.x * event.x + event.y * event.y + event.z * event.z);
-        if (magnitude > 24.5) {
-          if (!_isEmergencyActive && !_isFallDialogShowing) {
-            _triggerFallFlow(isSimulated: false);
+      _sensorSubCreationCount++;
+      DateTime lastEventTime = DateTime.now();
+      _accelSubscription = userAccelerometerEventStream(
+        samplingPeriod: const Duration(milliseconds: 1000), // Throttled 1Hz sampling
+      ).listen(
+        (UserAccelerometerEvent event) {
+          _sensorEventCount++;
+          final now = DateTime.now();
+          if (now.difference(lastEventTime).inMilliseconds < 1500) return;
+
+          final double magnitude = sqrt(event.x * event.x + event.y * event.y + event.z * event.z);
+          if (magnitude > 35.0) {
+            lastEventTime = now;
+            if (!_isEmergencyActive && !_isFallDialogShowing && mounted) {
+              _triggerFallFlow(isSimulated: false);
+            }
           }
-        }
-      });
+        },
+        onError: (_) {
+          // Sensor fallback for hardware environments without accelerometer
+        },
+        cancelOnError: false,
+      );
     } catch (_) {
       // Sensor fallback for hardware environments without accelerometer
     }
   }
 
+  void _pauseAccelerometerListener() {
+    if (_accelSubscription != null) {
+      _accelSubscription?.cancel();
+      _accelSubscription = null;
+      _sensorSubCancellationCount++;
+    }
+  }
+
+  void _resumeAccelerometerListener() {
+    if (_accelSubscription == null && mounted) {
+      _initAccelerometerListener();
+    }
+  }
+
   @override
   void dispose() {
-    _accelSubscription?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    _diagnosticTimer?.cancel();
+    _diagnosticTimer = null;
+    _pauseAccelerometerListener();
     _contactNameController.dispose();
     _contactPhoneController.dispose();
     super.dispose();
   }
 
   Future<Position?> _getCurrentLocation() async {
+    _locationRequestCount++;
     try {
-      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled().timeout(
+        const Duration(seconds: 3),
+        onTimeout: () => false,
+      );
       if (!serviceEnabled) return null;
 
-      LocationPermission permission = await Geolocator.checkPermission();
+      LocationPermission permission = await Geolocator.checkPermission().timeout(
+        const Duration(seconds: 3),
+        onTimeout: () => LocationPermission.denied,
+      );
       if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
+        permission = await Geolocator.requestPermission().timeout(
+          const Duration(seconds: 5),
+          onTimeout: () => LocationPermission.denied,
+        );
         if (permission == LocationPermission.denied) return null;
       }
-      return await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
+      return await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.medium,
+          timeLimit: Duration(seconds: 5),
+        ),
+      );
     } catch (e) {
       return null;
     }
@@ -252,26 +332,35 @@ class _HomeScreenState extends State<HomeScreen> {
     if (_isFallDialogShowing) return;
     _isFallDialogShowing = true;
 
-    final result = await showDialog<FallDialogResult>(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => FallConfirmationDialog(isSimulated: isSimulated),
-    );
+    FallDialogResult? result;
+    try {
+      result = await showDialog<FallDialogResult>(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => FallConfirmationDialog(isSimulated: isSimulated),
+      );
+    } finally {
+      _isFallDialogShowing = false;
+    }
 
-    _isFallDialogShowing = false;
+    if (!mounted) return;
 
     if (result == FallDialogResult.cancelled || result == null) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Fall alert cancelled.'),
-            backgroundColor: Color(0xFF334155),
-          ),
-        );
-      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Fall alert cancelled.'),
+          backgroundColor: Color(0xFF334155),
+        ),
+      );
       return;
     }
 
+    if (result == FallDialogResult.immediate || result == FallDialogResult.timeout) {
+      await _createFallIncident(isSimulated: isSimulated);
+    }
+  }
+
+  Future<void> _createFallIncident({required bool isSimulated}) async {
     setState(() {
       _isSendingSos = true;
     });
@@ -297,6 +386,7 @@ class _HomeScreenState extends State<HomeScreen> {
         },
         detectionEvidence: {
           'source': 'FALL_DETECTION',
+          'trigger': 'FALL_DETECTION',
           'isSimulated': isSimulated,
           'impactG': 3.1,
           'sensorConfirmed': true,
@@ -306,22 +396,340 @@ class _HomeScreenState extends State<HomeScreen> {
       final incident = res['incident'];
       final assessment = res['assessment'];
 
-      setState(() {
-        _isEmergencyActive = true;
-        _isSendingSos = false;
-        _activeIncidentId = incident['_id'] ?? incident['id'];
-        _activePriority = incident['priority'] ?? assessment['priority'] ?? 'HIGH';
-        _activeStatus = incident['status'] ?? 'UNDERSTOOD';
-        _activeSummary = assessment?['summary'] ?? 'Fall emergency incident in progress.';
-      });
+      if (mounted) {
+        setState(() {
+          _isEmergencyActive = true;
+          _isSendingSos = false;
+          _activeIncidentId = incident['_id'] ?? incident['id'];
+          _activePriority = incident['priority'] ?? assessment['priority'] ?? 'HIGH';
+          _activeStatus = incident['status'] ?? 'UNDERSTOOD';
+          _activeSummary = assessment?['summary'] ?? 'Fall emergency incident in progress.';
+        });
+      }
 
     } catch (e) {
-      setState(() {
-        _isSendingSos = false;
-      });
       if (mounted) {
+        setState(() {
+          _isSendingSos = false;
+        });
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Fall Emergency Alert Error: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  Future<void> _triggerRouteDeviationFlow() async {
+    if (_isEmergencyActive) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('An emergency is already active.'), backgroundColor: Color(0xFFF59E0B)),
+        );
+      }
+      return;
+    }
+
+    final confirm = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E293B),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Row(
+          children: [
+            Icon(Icons.alt_route, color: Color(0xFF3B82F6), size: 28),
+            SizedBox(width: 10),
+            Text('Route Corridor Deviation', style: TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.bold)),
+          ],
+        ),
+        content: const Text(
+          'Simulate route corridor deviation alert?\n\nEvidence: 145m off path for 90s (Accuracy: 12m).',
+          style: TextStyle(color: Color(0xFFCBD5E1), fontSize: 13, height: 1.4),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('CANCEL', style: TextStyle(color: Color(0xFF94A3B8), fontWeight: FontWeight.bold)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF3B82F6)),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('SEND ROUTE ALERT', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Route alert cancelled.'), backgroundColor: Color(0xFF334155)),
+        );
+      }
+      return;
+    }
+
+    await _dispatchGenericIncident(
+      type: 'ROUTE_DEVIATION',
+      contextMsg: 'Route corridor deviation detected (145m off path for 90s)',
+      locationEvidence: {
+        'corridorDistanceMeters': 145,
+        'durationOutsideSeconds': 90,
+        'gpsAccuracy': 12,
+      },
+    );
+  }
+
+  Future<void> _triggerVoiceSosFlow() async {
+    if (_isEmergencyActive) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('An emergency is already active.'), backgroundColor: Color(0xFFF59E0B)),
+        );
+      }
+      return;
+    }
+
+    final confirm = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E293B),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Row(
+          children: [
+            Icon(Icons.mic, color: Color(0xFFEC4899), size: 28),
+            SizedBox(width: 10),
+            Text('Voice Distress SOS', style: TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.bold)),
+          ],
+        ),
+        content: const Text(
+          'Trigger Voice SOS distress intent signal ("Help me, emergency")?',
+          style: TextStyle(color: Color(0xFFCBD5E1), fontSize: 13, height: 1.4),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('CANCEL', style: TextStyle(color: Color(0xFF94A3B8), fontWeight: FontWeight.bold)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFEC4899)),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('TRIGGER VOICE SOS', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Voice SOS alert cancelled.'), backgroundColor: Color(0xFF334155)),
+        );
+      }
+      return;
+    }
+
+    await _dispatchGenericIncident(
+      type: 'VOICE_SOS',
+      contextMsg: 'Voice phrase distress intent detected: "Help me, emergency"',
+      voiceEvidence: {
+        'detectedIntent': 'HELP_DISTRESS',
+        'transcript': 'Help me, emergency',
+        'confidence': 92,
+      },
+    );
+  }
+
+  Future<void> _triggerCheckInFlow() async {
+    if (_isEmergencyActive) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('An emergency is already active.'), backgroundColor: Color(0xFFF59E0B)),
+        );
+      }
+      return;
+    }
+
+    final choice = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E293B),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Row(
+          children: [
+            Icon(Icons.timer_outlined, color: Color(0xFF10B981), size: 28),
+            SizedBox(width: 10),
+            Text('SAFETY CHECK-IN', style: TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.bold)),
+          ],
+        ),
+        content: const Text(
+          'Select a safety check-in action:\n\n'
+          '• Schedule Check-in (30 Min)\n'
+          '• Check In Now (Record active safety status)\n'
+          '• Test Missed Check-in (Simulate expired deadline)',
+          style: TextStyle(color: Color(0xFFCBD5E1), fontSize: 13, height: 1.4),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, 'CANCEL'),
+            child: const Text('CANCEL', style: TextStyle(color: Color(0xFF94A3B8), fontWeight: FontWeight.bold)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF10B981)),
+            onPressed: () => Navigator.pop(ctx, 'CHECK_IN_NOW'),
+            child: const Text('CHECK IN NOW', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF3B82F6)),
+            onPressed: () => Navigator.pop(ctx, 'SCHEDULE'),
+            child: const Text('SCHEDULE CHECK-IN', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFF59E0B)),
+            onPressed: () => Navigator.pop(ctx, 'TEST_MISSED'),
+            child: const Text('TEST MISSED CHECK-IN', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+
+    final auth = AuthService();
+
+    if (choice == 'CHECK_IN_NOW') {
+      try {
+        final res = await ApiService.respondToCheckIn(auth.token);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(res['message'] ?? 'Safety check-in recorded.'),
+              backgroundColor: const Color(0xFF10B981),
+            ),
+          );
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Check-in error: $e'), backgroundColor: Colors.red),
+          );
+        }
+      }
+      return;
+    }
+
+    if (choice == 'SCHEDULE') {
+      try {
+        final pos = await _getCurrentLocation();
+        await ApiService.scheduleCheckIn(
+          30,
+          auth.token,
+          latitude: pos?.latitude,
+          longitude: pos?.longitude,
+        );
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Safety check-in scheduled for 30 minutes.'), backgroundColor: Color(0xFF10B981)),
+          );
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Failed to schedule check-in: $e'), backgroundColor: Colors.red),
+          );
+        }
+      }
+      return;
+    }
+
+    if (choice == 'TEST_MISSED') {
+      await _dispatchGenericIncident(
+        type: 'MISSED_CHECKIN',
+        contextMsg: 'Protected person did not complete the scheduled safety check-in before the deadline.',
+        checkInEvidence: {
+          'scheduledTime': DateTime.now().subtract(const Duration(minutes: 45)).toIso8601String(),
+          'deadline': DateTime.now().subtract(const Duration(minutes: 15)).toIso8601String(),
+          'missedDurationSeconds': 900,
+          'lastCheckInAt': null,
+        },
+      );
+      return;
+    }
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Check-in action cancelled.'), backgroundColor: Color(0xFF334155)),
+      );
+    }
+  }
+
+  Future<void> _dispatchGenericIncident({
+    required String type,
+    required String contextMsg,
+    Map<String, dynamic>? locationEvidence,
+    Map<String, dynamic>? voiceEvidence,
+    Map<String, dynamic>? checkInEvidence,
+  }) async {
+    setState(() {
+      _isSendingSos = true;
+    });
+
+    final auth = AuthService();
+    final pos = await _getCurrentLocation();
+    final lat = pos?.latitude ?? 13.0827;
+    final lng = pos?.longitude ?? 80.2707;
+
+    final String triggerMap = {
+      'ROUTE_DEVIATION': 'ROUTE_ALERT',
+      'VOICE_SOS': 'VOICE_SOS',
+      'VOICE': 'VOICE_SOS',
+      'MISSED_CHECKIN': 'CHECK_IN_TIMEOUT',
+      'STEALTH_SOS': 'STEALTH_SOS',
+      'FALL_DETECTION': 'FALL_DETECTION',
+      'FALL': 'FALL_DETECTION',
+      'MANUAL_SOS': 'SOS_BUTTON',
+      'SOS': 'SOS_BUTTON',
+    }[type] ?? 'SOS_BUTTON';
+
+    try {
+      final res = await ApiService.createIncident(
+        type: type,
+        latitude: lat,
+        longitude: lng,
+        userId: auth.user?['userId'] ?? 'USR-MOBILE-01',
+        token: auth.token,
+        context: contextMsg,
+        isSimulated: true,
+        detectionEvidence: {
+          'source': ApiService.resolveSourceForType(type),
+          'trigger': triggerMap,
+          'isSimulated': true,
+        },
+        locationEvidence: locationEvidence,
+        voiceEvidence: voiceEvidence,
+        checkInEvidence: checkInEvidence,
+      );
+
+      final incident = res['incident'];
+      final assessment = res['assessment'];
+
+      if (mounted) {
+        setState(() {
+          _isEmergencyActive = true;
+          _isSendingSos = false;
+          _activeIncidentId = incident['_id'] ?? incident['id'];
+          _activePriority = incident['priority'] ?? assessment['priority'] ?? 'MEDIUM';
+          _activeStatus = incident['status'] ?? 'ASSESSED';
+          _activeSummary = assessment?['summary'] ?? '$type incident in progress.';
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isSendingSos = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Emergency Alert Error: $e'), backgroundColor: Colors.red),
         );
       }
     }
@@ -330,6 +738,21 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _triggerSos(String type) async {
     if (type == 'FALL_DETECTION' || type == 'FALL') {
       await _triggerFallFlow(isSimulated: true);
+      return;
+    }
+
+    if (type == 'ROUTE_DEVIATION') {
+      await _triggerRouteDeviationFlow();
+      return;
+    }
+
+    if (type == 'VOICE_SOS' || type == 'VOICE') {
+      await _triggerVoiceSosFlow();
+      return;
+    }
+
+    if (type == 'MISSED_CHECKIN') {
+      await _triggerCheckInFlow();
       return;
     }
 
@@ -990,7 +1413,10 @@ class _HomeScreenState extends State<HomeScreen> {
                         style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1E293B), padding: const EdgeInsets.symmetric(vertical: 12)),
                         icon: const Icon(Icons.security, color: Color(0xFFF59E0B), size: 18),
                         label: const Text('Stealth SOS', style: TextStyle(color: Colors.white, fontSize: 12)),
-                        onPressed: () => _triggerSos('STEALTH_SOS'),
+                        onPressed: () => Navigator.push(
+                          context,
+                          MaterialPageRoute(builder: (context) => const StealthCalculatorScreen()),
+                        ),
                       ),
                     ),
                   ],
@@ -1025,6 +1451,26 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                     ),
                   ],
+                ),
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF2563EB),
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                    icon: const Icon(Icons.record_voice_over, color: Colors.white, size: 20),
+                    label: const Text(
+                      'Voice Assistant (Live Gemini AI)',
+                      style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
+                    ),
+                    onPressed: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (context) => const VoiceAssistantScreen()),
+                    ),
+                  ),
                 ),
                 const SizedBox(height: 28),
 

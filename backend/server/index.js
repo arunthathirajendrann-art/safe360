@@ -6,6 +6,7 @@ const mongoose = require("mongoose");
 const authRoutes = require("../routes/authRoutes");
 const contactRoutes = require("../routes/contactRoutes");
 const incidentRoutes = require("../routes/incidentRoutes");
+const voiceRoutes = require("../routes/voiceRoutes");
 const { handleTwilioVoiceStatusCallback, handleTwilioVoiceTwiML } = require("../controllers/twilioVoiceCallbackController");
 const { processEscalationTimeouts } = require("../services/escalation/contactEscalationService");
 
@@ -19,6 +20,7 @@ app.use(express.urlencoded({ extended: true }));
 app.use("/api/auth", authRoutes);
 app.use("/api/contacts", contactRoutes);
 app.use("/api/incidents", incidentRoutes);
+app.use("/api/voice", voiceRoutes);
 app.all("/api/notifications/twilio/voice/twiml", handleTwilioVoiceTwiML);
 app.post("/api/notifications/twilio/voice/status", handleTwilioVoiceStatusCallback);
 
